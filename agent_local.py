@@ -18,6 +18,7 @@ import pty
 import re
 import shlex
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -38,6 +39,9 @@ SECRET = "omarchy-agent-local-key"
 KEY_ENV = "OMARCHY_LOCAL_KEY"
 KEY_PLACEHOLDER = "@OMARCHY_LOCAL_KEY@"
 RESERVE_GIB = 8
+# How often a setup rewrites its progress for the panel, and the window its speed is averaged over.
+PROGRESS_PUBLISH_SECONDS = 0.5
+PROGRESS_WINDOW_SECONDS = 4
 NOT_ENOUGH_MEMORY = "Not enough memory to start model"
 RAM_CLASSES = (32, 64, 96, 128, 192, 256, 512)
 STANDARD_INPUTS = ("model", "draft", "ctx", "alias", "key", "temperature", "top_p", "top_k")
@@ -850,12 +854,25 @@ def verify_file(path, record):
 
 
 class Progress:
-  def __init__(self, total):
+  """Bytes a setup fetches: printed every few seconds and, with a recipe id,
+  published to the agents panel through the setup's installing record."""
+
+  def __init__(self, total=0, rid=None):
     self.total = total
     self.done = 0
+    self.image = (0, 0)
     self.lock = threading.Lock()
     self.last = 0
+    self.published = 0
     self.started = time.time()
+    self.rid = rid
+    # (time, bytes) samples over the last few seconds, for the speed the panel shows
+    self.samples = [(self.started, 0)]
+
+  def grow(self, amount):
+    with self.lock:
+      self.total += amount
+    self.publish(force=True)
 
   def add(self, amount):
     with self.lock:
@@ -865,12 +882,51 @@ class Progress:
         self.last = now
         rate = self.done / max(now - self.started, 0.001)
         say(f"  {gib(self.done):6.1f} / {gib(self.total):.1f} GiB  {rate / 2**20:6.0f} MiB/s")
+    self.publish()
+
+  def resumed(self, amount):
+    """Bytes already on disk from an interrupted download: done, but not part
+    of the speed, so every sample moves up with them."""
+    with self.lock:
+      self.done += amount
+      self.samples = [(at, done + amount) for at, done in self.samples]
+    self.publish()
+
+  def pulled(self, got, total):
+    """The runtime image's layers so far, which count toward the same bar."""
+    with self.lock:
+      self.image = (got, total)
+    self.publish()
+
+  def snapshot(self):
+    with self.lock:
+      done = self.done + self.image[0]
+      total = self.total + self.image[1]
+      now = time.time()
+      self.samples.append((now, done))
+      while len(self.samples) > 2 and now - self.samples[1][0] > PROGRESS_WINDOW_SECONDS:
+        self.samples.pop(0)
+      first_time, first_done = self.samples[0]
+      rate = (done - first_done) / (now - first_time) if now - first_time > 0.2 else 0
+      return done, total, rate
+
+  def publish(self, force=False):
+    if not self.rid:
+      return
+    now = time.time()
+    if not force and now - self.published < PROGRESS_PUBLISH_SECONDS:
+      return
+    self.published = now
+    done, total, rate = self.snapshot()
+    update_installing(self.rid, phase="downloading", done_bytes=int(done), total_bytes=int(total), rate_bytes_s=int(rate))
 
 
 def download(record, progress):
   url = f"https://huggingface.co/{record['repo']}/resolve/{record['revision']}/{urllib.request.quote(record['path'])}"
   staging = ensure_dir(os.path.join(data_dir(), "staging"))
   part = os.path.join(staging, os.path.basename(blob_path(record)) + ".part")
+  if os.path.exists(part) and os.path.getsize(part) <= record["size"]:
+    progress.resumed(os.path.getsize(part))
   for attempt in range(5):
     offset = os.path.getsize(part) if os.path.exists(part) else 0
     if offset > record["size"]:
@@ -988,12 +1044,14 @@ def prune_filesets(rid, keep):
       shutil.rmtree(os.path.join(base, name), ignore_errors=True)
 
 
-def materialize(rid, files, roles, seed_dir=None):
+def materialize(rid, files, roles, seed_dir=None, progress=None):
   """Fetch a run's files and link them into their own file-set directory.
   Returns the file set id the unit mounts."""
   validate_files(files, roles)
   missing = [record for record in files if not os.path.isfile(blob_path(record))]
   missing = [record for record in missing if not adopt_seed(record, seed_dir)]
+  if missing and load_installing(rid) is not None:
+    update_installing(rid, partials=[os.path.basename(blob_path(record)) + ".part" for record in missing])
   need = sum(record["size"] for record in missing)
   if need:
     ensure_dir(data_dir())
@@ -1001,7 +1059,8 @@ def materialize(rid, files, roles, seed_dir=None):
     if need + 2 * 2**30 > free:
       raise LocalError(f"Need {gib(need):.1f} GiB free for downloads, {gib(free):.1f} GiB available in {data_dir()}")
     say(f"Downloading {len(missing)} file(s), {gib(need):.1f} GiB, from Hugging Face")
-    progress = Progress(need)
+    progress = progress or Progress()
+    progress.grow(need)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
       for future in [pool.submit(download, record, progress) for record in missing]:
         future.result()
@@ -1284,7 +1343,7 @@ PULL_DONE_RE = re.compile(r"Copying blob (\w+) (?:done|skipped)")
 PULL_UNITS = {"b": 1, "B": 1, "KiB": 2**10, "MiB": 2**20, "GiB": 2**30, "KB": 1e3, "MB": 1e6, "GB": 1e9}
 
 
-def ensure_image(image):
+def ensure_image(image, progress=None):
   if subprocess.run(["podman", "image", "exists", image]).returncode == 0:
     return
   say(f"Pulling the runtime image {image.split('@')[0]}")
@@ -1325,6 +1384,8 @@ def ensure_image(image):
       elif "Copying blob" not in line:
         lines.append(line)
     now = time.time()
+    if layers and progress:
+      progress.pulled(sum(value[0] for value in layers.values()), sum(value[1] for value in layers.values()))
     if layers and now - shown >= 5:
       shown = now
       got = sum(value[0] for value in layers.values())
@@ -1540,7 +1601,8 @@ def expected_load_seconds(rid, manifest):
   try:
     return float(_read(load_seconds_path(rid)))
   except ValueError:
-    return (manifest.get("observed") or {}).get("load_seconds")
+    # A first start has no history yet: the catalog's measurement stands in.
+    return (manifest.get("observed") or {}).get("load_seconds") or manifest.get("measured_load_seconds")
 
 
 def error_path(rid):
@@ -1653,91 +1715,169 @@ def cmd_use(argv):
   parser.add_argument("--gpu")
   parser.add_argument("--seed", help="reuse matching files from this directory before downloading")
   parser.add_argument("--unqualified", action="store_true", help="run a recipe not measured on this machine class")
+  parser.add_argument("--detach", action="store_true", help="set it up in the background; the agents panel shows its progress")
   args = parser.parse_args(argv)
-  with Lock():
-    catalog = load_catalog()
-    profile = machine_profile()
-    gpu = choose_gpu(profile, args.gpu)
-    if args.target == "best":
-      rid, variant, skipped = resolve_best(catalog, profile, gpu, args.ctx)
-      for skipped_id, reason in skipped:
-        say(f"Skipping {skipped_id}: {reason}")
-      say(f"Best for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")
-    else:
-      rid = args.target
-      _lookup_recipe(catalog, rid)
-      variant, reason = compatibility(catalog, rid, profile, gpu, args.ctx)
+  catalog = load_catalog()
+  profile = machine_profile()
+  gpu = choose_gpu(profile, args.gpu)
+  if args.target == "best":
+    rid, variant, skipped = resolve_best(catalog, profile, gpu, args.ctx)
+    for skipped_id, reason in skipped:
+      say(f"Skipping {skipped_id}: {reason}")
+    say(f"Best for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")
+  else:
+    rid = args.target
+    _lookup_recipe(catalog, rid)
+    variant, reason = compatibility(catalog, rid, profile, gpu, args.ctx)
+    if variant is None:
+      if not args.unqualified:
+        raise LocalError(f"{rid} isn't qualified for this machine: {reason}\nRun with --unqualified to try anyway.")
+      variant, fit_reason = pick_variant(catalog.recipes[rid], profile, gpu, args.ctx)
       if variant is None:
-        if not args.unqualified:
-          raise LocalError(f"{rid} isn't qualified for this machine: {reason}\nRun with --unqualified to try anyway.")
-        variant, fit_reason = pick_variant(catalog.recipes[rid], profile, gpu, args.ctx)
-        if variant is None:
-          raise LocalError(f"{rid} doesn't fit: {fit_reason}")
-        say(f"Warning: {reason}")
-    recipe = catalog.recipes[rid]
-    runtime = catalog.runtimes[recipe["runtime"]]
-    catalog_info = {"version": catalog.version}
-    if runtime.get("tier") == "third-party":
-      review = load_review(catalog, runtime)
-      say(f"Runtime {recipe['runtime']} is third-party: {review.get('publisher', 'unknown publisher')}, license {review.get('license_url', 'unknown')}")
-    if runtime.get("key_on_cmdline"):
-      say(f"Warning: runtime {recipe['runtime']} takes its key as a command-line argument, visible in the process list to other local users")
-    preflight(runtime, gpu)
-    files, roles = build_artifacts(recipe)
-    say(f"Recipe {rid}: {len(files)} file(s), {gib(sum(f['size'] for f in files)):.1f} GiB, context {variant['ctx']}")
-    for license_name in sorted({f"{f['repo']} ({f['license']})" for f in files}):
-      say(f"  weights: {license_name}")
-    fileset = materialize(rid, files, roles, args.seed)
-    ensure_image(runtime["image"])
-    key = ensure_key()
-    manifest = {
-      "schema": SCHEMA,
-      "recipe_id": rid,
-      "runtime_id": recipe["runtime"],
-      "catalog": catalog_info,
-      "profile": profile,
-      "gpu": gpu["family"],
-      "variant": variant,
-      "recipe": recipe,
-      "runtime": runtime,
-      "image": runtime["image"],
-      "files": files,
-      "roles": roles,
-      "fileset": fileset,
-      "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    _, _, _, skipped = server_invocation(runtime, recipe, variant, roles, rid)
-    if skipped:
-      say(f"Note: runtime {recipe['runtime']} takes no {', '.join(skipped)} default; clients choose their own")
-    # Downloaded is installed: when other models hold the memory it needs,
-    # the setup is kept, stopped, and starts later from the panel's play.
-    if not unit_active(rid) and load_model(rid) is None:
-      try:
-        check_headroom(variant, gpu)
-      except LocalError as error:
-        write_unit_files(rid, render_container(rid, recipe, runtime, variant, roles, gpu, fileset))
-        clear_error(rid)
-        # Its first start runs the checks activate() would have.
-        manifest["unchecked"] = True
-        path = save_model(manifest, started=False)
-        prune_filesets(rid, fileset)
-        refresh_list_cache(catalog, profile)
-        write_status(catalog, profile)
-        say("")
-        say(f"Installed {rid}, but it can't start now: {error}")
-        say(f"Stop another model, then press play in the agents panel or run: omarchy agent local start {rid}")
-        say(f"Manifest: {path}")
-        return 0
-    activate(manifest, recipe, runtime, gpu, key, catalog, profile)
-    path = save_model(manifest)
-    prune_filesets(rid, fileset)
-    refresh_list_cache(catalog, profile)
-    write_status(catalog, profile)
-    say("")
-    say(f"Running {rid} at {endpoint(rid)} (model id {rid}, key in {key_path()})")
-    say(f"Loaded in {manifest['observed']['load_seconds']:.0f}s, using about {manifest['observed']['ram_used_gib']:.0f} GiB")
-    say(f"Manifest: {path}")
-    say(f"Launch an agent against it with: omarchy agent --local-model {rid}")
+        raise LocalError(f"{rid} doesn't fit: {fit_reason}")
+      say(f"Warning: {reason}")
+  measured_load = load_measurement(catalog, catalog.recipes[rid], profile, gpu).get("load_seconds")
+  if args.detach:
+    return detach_use(rid, args, catalog.recipes[rid], measured_load)
+  # A first setup shows in the panel from now on: waiting for the lock, then
+  # downloading, then loading once activate() writes its pending row.
+  fresh = load_model(rid) is None
+  if fresh:
+    if installing_idle(rid):
+      begin_installing(rid, catalog.recipes[rid], measured_load)
+    # The process carrying the setup is the one remove signals, from now on,
+    # so a setup waiting for another's lock can be cancelled too. A second use
+    # of the same recipe leaves a live owner in place; a detached unit takes
+    # over the record its caller wrote.
+    owner = (load_installing(rid) or {}).get("pid")
+    if not (isinstance(owner, int) and owner != os.getpid() and os.path.exists(f"/proc/{owner}")):
+      update_installing(rid, pid=os.getpid())
+  try:
+    with Lock():
+      if fresh and load_model(rid) is None and load_installing(rid) is None:
+        # remove cleared its record while it waited: nothing to fetch.
+        raise LocalError(f"The setup of {rid} was cancelled")
+      return _use_setup(rid, variant, args, catalog, profile, gpu, fresh, measured_load)
+  except KeyboardInterrupt:
+    if fresh and load_model(rid) is None:
+      clear_installing(rid)
+      write_status(catalog, profile)
+    raise
+  except Exception as error:
+    if fresh and load_model(rid) is None:
+      fail_installing(rid, getattr(error, "short", None) or (str(error).splitlines() or ["Setup failed"])[0])
+    raise
+
+
+def detach_use(rid, args, recipe, measured_load=None):
+  """Run the setup as a transient user unit, so it outlives the panel or
+  terminal that asked for it; its output goes to the journal."""
+  unit = install_unit(rid)
+  if systemctl("is-active", "--quiet", unit).returncode == 0:
+    say(f"{rid} is already being set up; follow it with: journalctl --user -u {unit} -f")
+    return 0
+  systemctl("reset-failed", unit)
+  if load_model(rid) is None and installing_idle(rid):
+    begin_installing(rid, recipe, measured_load)
+  entry = os.path.join(os.path.dirname(os.path.realpath(__file__)), "omarchy-local-ai")
+  command = ["systemd-run", "--user", "--collect", "--quiet", f"--unit={unit}", f"--description=Set up local model {rid}"]
+  # The unit takes these from systemd-run's own environment by name, so the
+  # token's value never appears in a process's arguments. The catalog is made
+  # absolute: the unit doesn't run from this directory.
+  env = dict(os.environ)
+  if env.get("OMARCHY_LOCAL_AI_CATALOG"):
+    env["OMARCHY_LOCAL_AI_CATALOG"] = os.path.abspath(env["OMARCHY_LOCAL_AI_CATALOG"])
+  for name in ("OMARCHY_LOCAL_AI_CATALOG", "HF_TOKEN"):
+    if env.get(name):
+      command.append(f"--setenv={name}")
+  command += [entry, "use", rid]
+  if args.ctx:
+    command += ["--ctx", str(args.ctx)]
+  if args.gpu:
+    command += ["--gpu", args.gpu]
+  if args.seed:
+    command += ["--seed", os.path.abspath(args.seed)]
+  if args.unqualified:
+    command.append("--unqualified")
+  result = subprocess.run(command, capture_output=True, text=True, env=env)
+  if result.returncode != 0:
+    reason = (result.stderr.strip().splitlines() or ["systemd-run failed"])[-1]
+    if load_model(rid) is None:
+      fail_installing(rid, reason)
+    raise LocalError(f"Can't start the setup of {rid}: {reason}")
+  say(f"Setting up {rid} in the background; the agents panel shows its progress, or follow it with: journalctl --user -u {unit} -f")
+  return 0
+
+
+def _use_setup(rid, variant, args, catalog, profile, gpu, fresh, measured_load=None):
+  recipe = catalog.recipes[rid]
+  runtime = catalog.runtimes[recipe["runtime"]]
+  catalog_info = {"version": catalog.version}
+  if runtime.get("tier") == "third-party":
+    review = load_review(catalog, runtime)
+    say(f"Runtime {recipe['runtime']} is third-party: {review.get('publisher', 'unknown publisher')}, license {review.get('license_url', 'unknown')}")
+  if runtime.get("key_on_cmdline"):
+    say(f"Warning: runtime {recipe['runtime']} takes its key as a command-line argument, visible in the process list to other local users")
+  preflight(runtime, gpu)
+  files, roles = build_artifacts(recipe)
+  say(f"Recipe {rid}: {len(files)} file(s), {gib(sum(f['size'] for f in files)):.1f} GiB, context {variant['ctx']}")
+  for license_name in sorted({f"{f['repo']} ({f['license']})" for f in files}):
+    say(f"  weights: {license_name}")
+  progress = Progress(rid=rid if fresh else None)
+  fileset = materialize(rid, files, roles, args.seed, progress)
+  ensure_image(runtime["image"], progress)
+  key = ensure_key()
+  manifest = {
+    "schema": SCHEMA,
+    "recipe_id": rid,
+    "runtime_id": recipe["runtime"],
+    "catalog": catalog_info,
+    "profile": profile,
+    "gpu": gpu["family"],
+    "variant": variant,
+    "recipe": recipe,
+    "runtime": runtime,
+    "image": runtime["image"],
+    "files": files,
+    "roles": roles,
+    "fileset": fileset,
+    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    "measured_load_seconds": measured_load,
+  }
+  _, _, _, skipped = server_invocation(runtime, recipe, variant, roles, rid)
+  if skipped:
+    say(f"Note: runtime {recipe['runtime']} takes no {', '.join(skipped)} default; clients choose their own")
+  # Downloaded is installed: when other models hold the memory it needs,
+  # the setup is kept, stopped, and starts later from the panel's play.
+  if not unit_active(rid) and load_model(rid) is None:
+    try:
+      check_headroom(variant, gpu)
+    except LocalError as error:
+      write_unit_files(rid, render_container(rid, recipe, runtime, variant, roles, gpu, fileset))
+      clear_error(rid)
+      # Its first start runs the checks activate() would have.
+      manifest["unchecked"] = True
+      path = save_model(manifest, started=False)
+      clear_installing(rid)
+      prune_filesets(rid, fileset)
+      refresh_list_cache(catalog, profile)
+      write_status(catalog, profile)
+      say("")
+      say(f"Installed {rid}, but it can't start now: {error}")
+      say(f"Stop another model, then press play in the agents panel or run: omarchy agent local start {rid}")
+      say(f"Manifest: {path}")
+      return 0
+  activate(manifest, recipe, runtime, gpu, key, catalog, profile)
+  path = save_model(manifest)
+  clear_installing(rid)
+  prune_filesets(rid, fileset)
+  refresh_list_cache(catalog, profile)
+  write_status(catalog, profile)
+  say("")
+  say(f"Running {rid} at {endpoint(rid)} (model id {rid}, key in {key_path()})")
+  say(f"Loaded in {manifest['observed']['load_seconds']:.0f}s, using about {manifest['observed']['ram_used_gib']:.0f} GiB")
+  say(f"Manifest: {path}")
+  say(f"Launch an agent against it with: omarchy agent --local-model {rid}")
   return 0
 
 
@@ -1842,6 +1982,10 @@ def model_record(rid, manifest, profile):
 
 def status_record(catalog, profile):
   models = {rid: model_record(rid, load_model(rid), profile) for rid in known_models()}
+  for rid in installing_models():
+    record = load_installing(rid)
+    if record is not None and rid not in models:
+      models[rid] = install_row(rid, record)
   record = {
     "models": models,
     "last": last_model_id(),
@@ -2028,8 +2172,30 @@ def cmd_remove(argv):
   rid = args.recipe
   if not ID_RE.match(rid):
     raise LocalError("Not a recipe id")
+  setting_up = load_installing(rid)
+  if setting_up is not None:
+    # Cancel first: the setup holds the lock this removal waits for.
+    systemctl("stop", install_unit(rid))
+    stop_setup_process(setting_up.get("pid"))
   with Lock():
     manifest = load_model(rid)
+    if manifest is None and setting_up is not None:
+      # Cancelled while its model loaded: activation starts the unit before
+      # the manifest exists, so stop it before its files go.
+      systemctl("stop", unit_name(rid))
+      clear_installing(rid)
+      freed, _ = _remove_files(rid)
+      # Only this setup's half-downloaded files: others resume from theirs.
+      for name in setting_up.get("partials") or []:
+        if isinstance(name, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", name.removesuffix(".part")):
+          path = os.path.join(data_dir(), "staging", name)
+          if os.path.exists(path):
+            freed += os.path.getsize(path)
+            os.unlink(path)
+      write_status(catalog, profile)
+      refresh_list_cache(catalog, profile)
+      say(f"Cancelled the setup of {rid}" + (f", freeing {gib(freed):.1f} GiB" if freed else ""))
+      return 0
     running = unit_active(rid)
     size_gib = gib(sum(record.get("size", 0) for record in (manifest or {}).get("files", [])))
     # Shown as removing until it's gone: the marker outlasts the stop below,
@@ -2065,6 +2231,146 @@ def cmd_remove(argv):
 
 def removing_path(rid):
   return os.path.join(state_dir(), "removing", rid)
+
+
+def stop_setup_process(pid):
+  """A setup run from a terminal, which has no unit to stop: ends it if the
+  pid still belongs to this engine's use command."""
+  if not isinstance(pid, int) or pid <= 1 or pid == os.getpid():
+    return
+  cmdline = _read(f"/proc/{pid}/cmdline").split("\0")
+  if "use" not in cmdline or not any(part.endswith(("omarchy-local-ai", "agent_local.py")) for part in cmdline):
+    return
+  try:
+    os.kill(pid, signal.SIGTERM)
+  except OSError:
+    return
+  for _ in range(100):
+    if not os.path.exists(f"/proc/{pid}"):
+      return
+    time.sleep(0.1)
+
+
+# ---------------------------------------------------------------- setups in progress
+#
+# A setup has no manifest until its model first starts, so the panel learns of it
+# from its installing record: what is being fetched, how far along and how fast,
+# or why it failed. The record goes once the manifest exists; a failed one stays
+# until `remove` dismisses it.
+
+INSTALL_PHASES = ("waiting", "downloading", "failed")
+
+
+def installing_path(rid):
+  return os.path.join(state_dir(), "installing", f"{rid}.json")
+
+
+def install_unit(rid):
+  """The transient unit a detached setup runs in."""
+  return f"omarchy-agent-local-use-{rid}.service"
+
+
+def load_installing(rid):
+  try:
+    with open(installing_path(rid)) as handle:
+      record = json.load(handle)
+  except (OSError, ValueError):
+    return None
+  return record if isinstance(record, dict) and record.get("phase") in INSTALL_PHASES else None
+
+
+def installing_models():
+  folder = os.path.join(state_dir(), "installing")
+  try:
+    names = sorted(os.listdir(folder))
+  except OSError:
+    return []
+  return [name[:-5] for name in names if name.endswith(".json") and ID_RE.match(name[:-5])]
+
+
+def begin_installing(rid, recipe, load_seconds=None):
+  """`load_seconds` is how long the catalog measured its start: the panel gives the
+  download and the load that follows their shares of one bar from it."""
+  record = {"name": recipe.get("name", rid), "vendor": recipe.get("vendor", ""), "phase": "waiting",
+            "done_bytes": 0, "total_bytes": 0, "rate_bytes_s": 0, "since_ms": int(time.time() * 1000), "error": "",
+            "expected_load_seconds": load_seconds}
+  write_atomic(installing_path(rid), json.dumps(record) + "\n")
+  publish_installing(rid, record)
+  return record
+
+
+def update_installing(rid, **fields):
+  record = load_installing(rid)
+  if record is None:
+    return
+  record.update(fields)
+  write_atomic(installing_path(rid), json.dumps(record) + "\n")
+  publish_installing(rid, record)
+
+
+def installing_idle(rid):
+  """No setup of this recipe is under way: none listed, or only one that failed,
+  which a new attempt replaces rather than inheriting its error and start."""
+  record = load_installing(rid)
+  return record is None or record.get("phase") == "failed"
+
+
+def fail_installing(rid, reason):
+  update_installing(rid, phase="failed", rate_bytes_s=0, error=reason)
+
+
+def clear_installing(rid):
+  if os.path.exists(installing_path(rid)):
+    os.unlink(installing_path(rid))
+
+
+def install_row(rid, record):
+  """A setup in progress, shaped like an installed model's row so the panel
+  places it the same way; `install` carries what its progress bar shows."""
+  return {
+    "error": record.get("error", ""),
+    "fits": True,
+    "fit_reason": "",
+    "recipe": rid,
+    "name": record.get("name", rid),
+    "vendor": record.get("vendor", ""),
+    "runtime": "",
+    "image": "",
+    "ctx": None,
+    "unit": "installing",
+    "sub_state": "",
+    "result": "",
+    "port": None,
+    "endpoint": "",
+    "catalog_version": None,
+    "observed": None,
+    "since_ms": record.get("since_ms"),
+    "expected_load_seconds": record.get("expected_load_seconds"),
+    "expected_stop_seconds": None,
+    "expected_remove_seconds": None,
+    "install": {key: record.get(key, 0) for key in ("phase", "done_bytes", "total_bytes", "rate_bytes_s")},
+  }
+
+
+def publish_installing(rid, record):
+  """Rewrite only this setup's row: progress lands twice a second, and the full
+  status a write_status collects asks systemd about every model."""
+  ensure_dir(state_dir())
+  path = os.path.join(state_dir(), "status.json")
+  with open(os.path.join(state_dir(), "status.lock"), "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+      with open(path) as handle:
+        status = json.load(handle)
+    except (OSError, ValueError):
+      status = None
+    if not isinstance(status, dict) or not isinstance(status.get("models"), dict):
+      status = {"models": {}, "last": None, "ram_total_gib": round(gib(meminfo().get("MemTotal", 0)), 1), "catalog_version": None, "best": None}
+    # An installed model's own row wins: setting up a recipe again leaves it listed as it is.
+    if status["models"].get(rid, {}).get("unit", "installing") != "installing":
+      return
+    status["models"][rid] = install_row(rid, record)
+    write_atomic(path, json.dumps(status, indent=2) + "\n")
 
 
 def removal_rate():

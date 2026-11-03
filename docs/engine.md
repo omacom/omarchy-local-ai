@@ -74,6 +74,18 @@ Downloads share verified blobs. Each setup materializes an immutable
 A new file set leaves the previous unit's files intact until activation succeeds.
 Only then is the current manifest replaced and obsolete file sets pruned.
 
+A first setup is listed before it has a manifest: its installing record
+(`installing/<recipe>.json`) shows in `status.json` as a model whose unit is
+`installing`, with what it has fetched of the weights and runtime image, and
+how fast, rewritten twice a second. Once activation begins, the pending row
+of an activating model replaces it, and the record goes when the manifest is
+saved. A failed setup keeps its record, with the reason as `error`, until
+`remove` dismisses it. `use --detach` resolves and checks the recipe, then
+runs the setup in the transient user unit `omarchy-agent-local-use-<recipe>`,
+so it outlives the panel or terminal that asked for it. `remove` of a setup in
+progress cancels it, stopping that unit or the terminal's `use` process, and
+drops what it fetched.
+
 If a new setup cannot start because memory is busy, its manifest and unit are
 saved with `unchecked = true`. Its first plain `start [recipe]` performs the
 post-start authentication and model-ID checks; failure stops it and retains the
@@ -101,6 +113,7 @@ Paths are relative to the user's home. JSON caches are atomically replaced.
 | `.local/state/omarchy/agent-local/ports.json`, `last` | Stable port assignments and last started recipe. |
 | `.local/state/omarchy/agent-local/loads/`, `stops/`, `removal_rate` | Measured progress timings. |
 | `.local/state/omarchy/agent-local/errors/`, `removing/` | Per-model error and removal prediction. |
+| `.local/state/omarchy/agent-local/installing/<recipe>.json` | A first setup in progress or failed: name, vendor, phase, bytes, speed, start, error and the `use` process id. |
 | `.local/state/omarchy/agent-local/lock`, `status.lock` | Lifecycle admission and status snapshot locks. |
 | `.local/share/omarchy/agent-local/blobs/`, `models/` | Shared blob store and immutable file sets. |
 | `.config/containers/systemd/omarchy-agent-local-model-<recipe>.container` | Generated unit; shared `omarchy-agent-local.network` defines the internal network. |
@@ -115,9 +128,14 @@ catalog_version, best}`. `last` and `best` may be null. Each model contains:
 - Progress: `since_ms`, `expected_load_seconds`, `expected_stop_seconds`,
   `expected_remove_seconds`, and nullable `observed` (`load_seconds`,
   `ram_used_gib`, `gpu_used_gib`). Unavailable timings are null.
+- Setup, on `installing` models only: `install` with `phase` (`waiting` for
+  another setup to finish, `downloading`, or `failed`), `done_bytes` and
+  `total_bytes` over the weights still to fetch and the runtime image, and
+  `rate_bytes_s` averaged over the last few seconds. Their connection fields
+  are empty.
 
-Panel unit states are `active`, `activating`, `inactive`, `failed`, `deactivating`
-and `removing`. The panel uses `fits` to disable play and `error` to explain a
+Panel unit states are `active`, `activating`, `inactive`, `failed`, `deactivating`,
+`removing` and `installing`. The panel uses `fits` to disable play and `error` to explain a
 failure. Transition timestamps are Unix milliseconds. Pending activation uses
 the current manifest's observations until the new setup has been measured.
 
@@ -127,7 +145,7 @@ the current manifest's observations until the new setup has been measured.
 have null memory/context; missing measurements have null speeds.
 
 The panel calls plain `start <recipe>`, `stop <recipe>`, `remove <recipe>`,
-`use <recipe>` in a terminal, `refresh --quiet` on opening the add view, and
+`use --detach <recipe>`, `refresh --quiet` on opening the add view, and
 `status --write` when refreshing admission state. Units call `status --write`
 with `--started <recipe>` or `--stopped <recipe>` from their hooks.
 `list --json` and `status --json` print the corresponding shapes; `profile`
