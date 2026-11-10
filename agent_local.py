@@ -339,6 +339,21 @@ def fabric_side(peer):
     except OSError:
       return []
   return {"addr": src, "dev": dev, "hca": hca, "gid": gid, "hcas": hcas, "devs": [d for h in hcas for d in netdevs(h)]}
+def drop_cache(root, marker):
+  """Drops the page cache of every file under root's directories whose name holds marker."""
+  for top in (os.listdir(root) if os.path.isdir(root) else []):
+    if marker not in top:
+      continue
+    for directory, _, names in os.walk(os.path.join(root, top)):
+      for name in names:
+        try:
+          fd = os.open(os.path.join(directory, name), os.O_RDONLY)
+        except OSError:
+          continue
+        try:
+          os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+          os.close(fd)
 def ports():
   """Each RDMA-capable netdev with a carrier, and its IPv4 addresses as address/prefix."""
   links = json.loads(subprocess.run(["ip", "-j", "-4", "addr"], capture_output=True, text=True).stdout or "[]")
@@ -592,9 +607,8 @@ def validate_runtime(rid, runtime, root=None):
 
 
 def validate_pair_runtime(where, runtime, run):
-  """A runtime spanning two machines: its own network, the ranks' state folder and environment,
-  and the flags the engine binds its API to loopback with. Both ranks run the runtime's command,
-  which their servers compare."""
+  """A runtime spanning two machines: its own network, the ranks' commands and environment,
+  and the flags the engine binds its API to loopback with."""
   errors = []
   pair = runtime.get("pair")
   fabric = run.get("network") == "fabric"
@@ -611,17 +625,34 @@ def validate_pair_runtime(where, runtime, run):
   port = pair.get("master_port")
   if not isinstance(port, int) or not 1024 <= port <= 65535:
     errors.append(f"{where}.pair.master_port: must be 1024-65535")
+  model = pair.get("model")
+  if model is not None and not (isinstance(model, str) and model.startswith("/prepared/") and _safe_relpath(model[len("/prepared/"):], f"{where}.pair.model", [])):
+    errors.append(f"{where}.pair.model: must be a path under /prepared")
   state = pair.get("state")
-  if not (isinstance(state, str) and re.match(r"^/[a-z][a-z0-9_-]*$", state) and state not in ("/models", "/tmp")):
-    errors.append(f"{where}.pair.state: must be one top-level path such as /state, not /models or /tmp")
-  env = pair.get("env", {})
-  if not isinstance(env, dict):
-    errors.append(f"{where}.pair.env: must be a table")
-    env = {}
-  for key, value in env.items():
-    if not ENV_RE.match(key) or key == KEY_ENV or key in PAIR_NCCL:
-      errors.append(f"{where}.pair.env.{key}: not an allowed variable name ({', '.join(PAIR_NCCL)} are the engine's)")
-    _safe_string(value, f"{where}.pair.env.{key}", errors)
+  if state is not None and not (isinstance(state, str) and re.match(r"^/[a-z][a-z0-9_-]*$", state) and state not in ("/models", "/prepared", "/tmp")):
+    errors.append(f"{where}.pair.state: must be one top-level path such as /state, not /models, /prepared or /tmp")
+  # Without a worker command rank 1 runs the head's own invocation: its server compares the two.
+  prepared = pair.get("prepared_gib")
+  if prepared is not None and not (isinstance(prepared, (int, float)) and prepared > 0):
+    errors.append(f"{where}.pair.prepared_gib: must be a positive number of GiB")
+  for name in ("prepare", "worker"):
+    command = pair.get(name)
+    if command is None:
+      continue
+    if not isinstance(command, list) or not command:
+      errors.append(f"{where}.pair.{name}: must be a non-empty list")
+      continue
+    for index, part in enumerate(command):
+      _safe_string(part, f"{where}.pair.{name}[{index}]", errors)
+  for name in ("env", "head_env", "worker_env"):
+    table = pair.get(name, {})
+    if not isinstance(table, dict):
+      errors.append(f"{where}.pair.{name}: must be a table")
+      continue
+    for key, value in table.items():
+      if not ENV_RE.match(key) or key == KEY_ENV or key in PAIR_NCCL:
+        errors.append(f"{where}.pair.{name}.{key}: not an allowed variable name ({', '.join(PAIR_NCCL)} are the engine's)")
+      _safe_string(value, f"{where}.pair.{name}.{key}", errors)
   listen = runtime.get("listen")
   if not (isinstance(listen, dict) and set(listen) == {"host", "port"} and all(isinstance(v, str) and ARG_RE.match(v) for v in listen.values())):
     errors.append(f"{where}.listen: a host-network runtime names its bind flags, as {{ host = '--host', port = '--port' }}")
@@ -1336,17 +1367,20 @@ def prune_filesets(rid, keep):
   base = os.path.join(data_dir(), "models", rid)
   if not os.path.isdir(base) or not FILESET_RE.match(keep or ""):
     return
+  manifest = load_model(rid) or {}
+  # A paired recipe's rank folders go with their file set, and only the current generation's stay.
+  generation = rank_generation(manifest.get("runtime"))
+  current = f"{keep}.{generation}." if generation else f"{keep}."
   for name in os.listdir(base):
-    # A paired recipe's rank folders (<fileset>.rank<N>) go with their file set.
-    if name != keep and not name.startswith(keep + "."):
+    if name != keep and not name.startswith(current):
       shutil.rmtree(os.path.join(base, name), ignore_errors=True)
   # The peer's copies too, once the setup that replaced them is the current one.
-  setup = (load_model(rid) or {}).get("pair")
+  setup = manifest.get("pair")
   if setup:
     peer_base = os.path.dirname(peer_fileset_dir(setup, rid, keep))
     q = shlex.quote
     try:
-      pair_ssh(setup["peer"], f"cd {q(peer_base)} && for d in *; do case $d in {q(keep)}|{q(keep)}.*) ;; *) rm -rf -- \"$d\" ;; esac; done", check=False)
+      pair_ssh(setup["peer"], f"cd {q(peer_base)} && for d in *; do case $d in {q(keep)}|{q(current)}*) ;; *) rm -rf -- \"$d\" ;; esac; done", check=False)
     except LocalError:
       pass
 
@@ -1411,7 +1445,9 @@ def server_invocation(runtime, recipe, variant, roles, rid):
   """Returns (entrypoint, argv, env) with the key as KEY_PLACEHOLDER when it's an argument."""
   inputs = runtime["inputs"]
   values = {
-    "model": f"/models/{roles['model']}",
+    # A paired runtime may serve a folder its prepare step made (the checkpoint linked, beside
+    # files the release lacks) instead of the file set itself.
+    "model": runtime.get("pair", {}).get("model") or f"/models/{roles['model']}",
     "draft": f"/models/{roles['draft']}" if roles.get("draft") else None,
     "ctx": str(variant["ctx"]),
     "alias": rid,
@@ -1508,7 +1544,7 @@ def render_container(rid, recipe, runtime, variant, roles, gpu, fileset):
     lines += [
       "Network=host",
       f"Volume=%h/.local/share/omarchy/agent-local/models/{rid}/{fileset}:/models:ro",
-      f"Volume=%h/.local/share/omarchy/agent-local/models/{rid}/{fileset}.rank0:{pair['state']}",
+      "Volume=" + rank_mount(runtime, f"%h/.local/share/omarchy/agent-local/models/{rid}/{rank_folder(fileset, 0, runtime)}"),
       f"EnvironmentFile=%h/.local/state/omarchy/agent-local/pair/{rid}.env",
       "Ulimit=stack=67108864:67108864",
       "Tmpfs=/tmp",
@@ -1848,6 +1884,15 @@ def evict_idle_weights(keep=()):
         os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
       finally:
         os.close(fd)
+  # A paired recipe's per-rank inputs (a weight file the size of the rank's share) are copied
+  # into GPU memory as it loads; on unified memory a cached copy only competes with the model.
+  # Prepare leaves them cached right after writing them.
+  running = running_models()
+  scope = {}
+  exec(FABRIC_SIDE, scope)
+  for rid in os.listdir(os.path.join(data_dir(), "models")) if os.path.isdir(os.path.join(data_dir(), "models")) else []:
+    if rid not in running:
+      scope["drop_cache"](os.path.join(data_dir(), "models", rid), ".rank")
 
 
 def check_headroom(variant, gpu):
@@ -1875,13 +1920,25 @@ def check_headroom(variant, gpu):
 # ---------------------------------------------------------------- ranks on two machines
 #
 # A paired recipe's file set is materialized here as any other, then copied to the peer over the
-# cable. Each rank keeps its server's caches in its own writable folder, <fileset>.rank<N>, at the
-# runtime's state path. Rank 1 runs on the peer as a plain Podman container the head unit's hooks
-# start and stop, with the same boundary as the head's: read-only root and model mounts, no
-# capabilities, no new privileges, the GPU and RDMA devices only.
+# cable. Each rank's own inputs (a weight file cut for that rank, tables made from the
+# checkpoint) are made next to the file set, in <fileset>.rank<N>, by the runtime's prepare
+# command in a container without network. Rank 1 runs on the peer as a plain Podman container
+# the head unit's hooks start and stop, with the same boundary as the head's: read-only root and
+# model mounts, no capabilities, no new privileges, the GPU and RDMA devices only.
+
+RANK_CONTAINER = ["--read-only", "--tmpfs", "/tmp", "--cap-drop", "all", "--security-opt", "no-new-privileges"]
+
+
+def rank_mount(runtime, folder):
+  """A rank's own folder: its prepared inputs read-only at /prepared, or, for a runtime naming a
+  state path, writable there for the server's caches."""
+  state = runtime["pair"].get("state")
+  return f"{folder}:{state}" if state else f"{folder}:/prepared:ro"
+
 
 def head_argv(runtime, recipe, variant, roles, rid):
-  """The server command both ranks run, bound to loopback on the model's port."""
+  """The head's server command, bound to loopback on the model's port; also rank 1's when the
+  runtime names no worker command."""
   entrypoint, argv, env, skipped = server_invocation(runtime, recipe, variant, roles, rid)
   return entrypoint, argv + [runtime["listen"]["host"], "127.0.0.1", runtime["listen"]["port"], str(port_for(rid))], env, skipped
 
@@ -1890,8 +1947,23 @@ def worker_name(rid):
   return f"{UNIT_PREFIX}{rid}-rank1"
 
 
-def rank_dir(rid, fileset, rank, home_dir=None):
-  return os.path.join(home_dir or home(), ".local", "share", "omarchy", "agent-local", "models", rid, f"{fileset}.rank{rank}")
+def rank_generation(runtime):
+  """A runtime with a prepare step keeps each rank's prepared files per image and prepare command:
+  an update prepares a new generation while the running setup keeps reading its own, and the old
+  one goes only once the new setup has started (prune_filesets)."""
+  prepare = (runtime or {}).get("pair", {}).get("prepare")
+  if not prepare:
+    return ""
+  return hashlib.sha256(json.dumps([runtime["image"], prepare]).encode()).hexdigest()[:12]
+
+
+def rank_folder(fileset, rank, runtime):
+  generation = rank_generation(runtime)
+  return f"{fileset}.{generation}.rank{rank}" if generation else f"{fileset}.rank{rank}"
+
+
+def rank_dir(rid, fileset, rank, home_dir=None, runtime=None):
+  return os.path.join(home_dir or home(), ".local", "share", "omarchy", "agent-local", "models", rid, rank_folder(fileset, rank, runtime))
 
 
 def peer_fileset_dir(pair, rid, fileset):
@@ -1933,9 +2005,29 @@ def peer_headroom(peer, variant):
   return available
 
 
+def prepare_command(runtime, rank):
+  return [part.replace("@RANK@", str(rank)).replace("@WORLD@", str(runtime["pair"]["nodes"])) for part in runtime["pair"]["prepare"]]
+
+
+def stream(argv, what):
+  """Runs a long step with its output on this terminal."""
+  if subprocess.run(argv, stdin=subprocess.DEVNULL).returncode != 0:
+    raise LocalError(f"{what} failed", short=f"{what} failed")
+
+
+def prepare_name(rid, rank):
+  """A prepare container's name, so remove can stop one a cancelled setup left running."""
+  return f"{UNIT_PREFIX}{rid}-prepare{rank}"
+
+
+def need_disk(where, free, need):
+  if free < need:
+    raise LocalError(f"{where} has {gib(free):.0f} GiB free, and this setup needs {gib(need):.0f} GiB more there", short=f"Not enough disk on {where}")
+
+
 def pair_setup(rid, manifest, runtime, pair):
-  """Everything rank 1 needs on the peer before the first start: the image, the file set and its
-  state folder (rank 0's here too)."""
+  """Everything both ranks read before the first start: rank 0's prepared inputs here, then the
+  image, the file set and rank 1's prepared inputs on the peer."""
   fileset = manifest["fileset"]
   models = fileset_dir(rid, fileset)
   inspect = subprocess.run(["podman", "image", "inspect", "--format", "{{.Id}}", runtime["image"]], capture_output=True, text=True)
@@ -1946,9 +2038,25 @@ def pair_setup(rid, manifest, runtime, pair):
   # A first setup cancelled from here on still knows where its copies went.
   if load_installing(rid) is not None:
     update_installing(rid, pair=manifest["pair"])
-  ensure_dir(rank_dir(rid, fileset, 0))
+  local_rank = rank_dir(rid, fileset, 0, runtime=runtime)
+  ensure_dir(local_rank)
   peer = pair["peer"]
   q = shlex.quote
+  # Before writing anything: the prepared files on each Spark, and the file set on the peer.
+  prepared = runtime["pair"].get("prepared_gib", 0) * 2**30
+  have = sum(os.path.getsize(os.path.join(d, f)) for d, _, names in os.walk(local_rank) for f in names)
+  need_disk("this machine", shutil.disk_usage(local_rank).free, prepared - have)
+  # Only what this setup reuses counts as already there: its file set and its generation's rank
+  # folder, not an older generation that stays until the new setup has started.
+  target, peer_rank = peer_fileset_dir(pair, rid, fileset), rank_dir(rid, fileset, 1, pair["home"], runtime)
+  base = os.path.dirname(target)
+  free, present = (pair_ssh(peer, f"mkdir -p {q(base)} && df -B1 --output=avail {q(base)} | tail -1 && du -sbc {q(target)} {q(peer_rank)} 2>/dev/null | tail -1 | cut -f1").stdout.split() + ["0", "0"])[:2]
+  need_disk(pair["host"], int(free), sum(record["size"] for record in manifest.get("files", [])) + prepared - int(present))
+  if runtime["pair"].get("prepare"):
+    say("Preparing rank 0's inputs here (minutes the first time)")
+    stream(["podman", "run", "--rm", "--name", prepare_name(rid, 0), "--network", "none", *RANK_CONTAINER,
+            "-v", f"{models}:/models:ro", "-v", f"{local_rank}:/prepared", runtime["image"], *prepare_command(runtime, 0)],
+           "Preparing rank 0")
   if pair_ssh(peer, f"podman image exists {q(ident)}", check=False).returncode != 0:
     say(f"Copying the runtime image to {pair['host']} over the link")
     save = subprocess.Popen(["podman", "save", runtime["image"]], stdout=subprocess.PIPE)
@@ -1957,14 +2065,17 @@ def pair_setup(rid, manifest, runtime, pair):
     if save.wait() != 0 or load.returncode != 0:
       raise LocalError(f"Copying the image to {pair['host']} failed: {load.stderr.strip()[-400:]}", short="Image copy to the peer failed")
     pair_ssh(peer, f"podman image exists {q(ident)}")
-  target = peer_fileset_dir(pair, rid, fileset)
   say(f"Copying the model files to {pair['host']} over the link (only what it lacks)")
   pair_ssh(peer, f"mkdir -p {q(target)}")
-  rsync = ["rsync", "-a", "--partial", "--delete", "--info=progress2", "--no-inc-recursive",
-           "-e", shlex.join(pair_ssh_argv() + ["-o", "Compression=no", "-c", "aes128-gcm@openssh.com"]), f"{models}/", f"{peer}:{target}/"]
-  if subprocess.run(rsync, stdin=subprocess.DEVNULL).returncode != 0:
-    raise LocalError(f"Copying the model files to {pair['host']} failed", short="Copy to the peer failed")
-  pair_ssh(peer, f"mkdir -p {q(rank_dir(rid, fileset, 1, pair['home']))}")
+  stream(["rsync", "-a", "--partial", "--delete", "--info=progress2", "--no-inc-recursive",
+          "-e", shlex.join(pair_ssh_argv() + ["-o", "Compression=no", "-c", "aes128-gcm@openssh.com"]),
+          f"{models}/", f"{peer}:{target}/"], f"Copying the model files to {pair['host']}")
+  pair_ssh(peer, f"mkdir -p {q(peer_rank)}")
+  if runtime["pair"].get("prepare"):
+    say(f"Preparing rank 1's inputs on {pair['host']}")
+    command = shlex.join(["podman", "run", "--rm", "--name", prepare_name(rid, 1), "--network", "none", *RANK_CONTAINER,
+                          "-v", f"{target}:/models:ro", "-v", f"{peer_rank}:/prepared", ident, *prepare_command(runtime, 1)])
+    stream(pair_ssh_argv() + [peer, command], f"Preparing rank 1 on {pair['host']}")
 
 
 def _placeholders(text, values):
@@ -1983,23 +2094,32 @@ def pair_worker_start(rid):
   pair = {"peer": setup["peer"], "host": setup["host"], "home": setup["home"]}
   here, there = pair_link(pair)
   # Also here: systemd's restarts after a failure don't pass admission.
+  peer_models = os.path.join(pair["home"], ".local", "share", "omarchy", "agent-local", "models", rid)
+  pair_python(pair["peer"], f"drop_cache({peer_models!r}, '.rank')", timeout=60)
   peer_headroom(pair["peer"], variant)
   spec = runtime["pair"]
-  def environment(rank, side):
-    values = {"@RANK@": str(rank), "@WORLD@": str(spec["nodes"]), "@MASTER_ADDR@": here["addr"],
-              "@MASTER_PORT@": str(spec["master_port"]), "@RDMA_DEVICES@": ",".join(side["hcas"])}
-    env = {name: _placeholders(value, values) for name, value in spec.get("env", {}).items()}
+  def values(rank, side):
+    return {"@RANK@": str(rank), "@WORLD@": str(spec["nodes"]), "@MASTER_ADDR@": here["addr"], "@MASTER_PORT@": str(spec["master_port"]),
+            "@CTX@": str(variant["ctx"]), "@RDMA_DEVICES@": ",".join(side["hcas"]), "@GID_INDEX@": str(side["gid"]), "@SOCKET_IFNAME@": side["dev"]}
+  def environment(rank, side, own):
+    env = {**spec.get("env", {}), **spec.get(own, {})}
+    env = {name: _placeholders(value, values(rank, side)) for name, value in env.items()}
     env.update(NCCL_SOCKET_IFNAME=side["dev"], NCCL_IB_HCA=",".join(side["hcas"]), NCCL_IB_GID_INDEX=str(side["gid"]))
     return env
-  write_atomic(pair_env_path(rid), "".join(f"{name}={value}\n" for name, value in sorted(environment(0, here).items())))
+  head = environment(0, here, "head_env")
+  write_atomic(pair_env_path(rid), "".join(f"{name}={value}\n" for name, value in sorted(head.items())))
   fileset = manifest["fileset"]
-  _, argv, worker, _ = head_argv(runtime, manifest["recipe"], variant, manifest["roles"], rid)
-  worker.update(environment(1, there))
+  worker = environment(1, there, "worker_env")
+  if spec.get("worker"):
+    argv = [_placeholders(part, values(1, there)) for part in spec["worker"]]
+  else:
+    _, argv, server_env, _ = head_argv(runtime, manifest["recipe"], variant, manifest["roles"], rid)
+    worker.update(server_env)
   run = runtime.get("run", {})
   command = ["podman", "run", "-d", "--replace", "--name", worker_name(rid), "--label", f"org.omarchy.agent-local.recipe={rid}",
              "--network", "host", "--read-only", "--tmpfs", "/tmp", "--cap-drop", "all", "--security-opt", "no-new-privileges", "--device", "nvidia.com/gpu=all", "--device", "/dev/infiniband",
              "--ulimit", "memlock=-1:-1", "--ulimit", "stack=67108864:67108864",
-             "-v", f"{peer_fileset_dir(pair, rid, fileset)}:/models:ro", "-v", f"{rank_dir(rid, fileset, 1, pair['home'])}:{spec['state']}"]
+             "-v", f"{peer_fileset_dir(pair, rid, fileset)}:/models:ro", "-v", rank_mount(runtime, rank_dir(rid, fileset, 1, pair["home"], runtime))]
   if run.get("shm_size_gib"):
     command += ["--shm-size", f"{int(run['shm_size_gib'] * 1024)}m"]
   for name, value in sorted(worker.items()):
@@ -2028,7 +2148,9 @@ def pair_remove(manifest, local_only=False):
   q = shlex.quote
   base = os.path.join(setup["home"], ".local", "share", "omarchy", "agent-local", "models", rid)
   others = {(load_model(other) or {}).get("pair", {}).get("image_id") for other in known_models() if other != rid}
-  command = f"podman rm -f {q(worker_name(rid))} >/dev/null 2>&1; rm -rf -- {q(base)}"
+  # A prepare a cancelled setup left running goes first, here and there, then its files.
+  subprocess.run(["podman", "rm", "-f", prepare_name(rid, 0)], capture_output=True)
+  command = f"podman rm -f {q(worker_name(rid))} {q(prepare_name(rid, 1))} >/dev/null 2>&1; rm -rf -- {q(base)}"
   if setup["image_id"] not in others:
     command += f"; podman rmi {q(setup['image_id'])} >/dev/null 2>&1"
   try:

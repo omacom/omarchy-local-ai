@@ -1,0 +1,55 @@
+name = "DeepSeek V4.1 Flash"
+summary = "552B mixture of experts, 16B active per token, 2.9-bit, split across two DGX Sparks. The largest model a Spark pair runs."
+runtime = "tensorfold-dsv41-pair"
+vendor = "deepseek"
+architecture = "moe"
+# Screenshots and photos through the checkpoint's vision tower.
+input = ["text", "image"]
+
+# Two Sparks cabled through their ConnectX-7 ports: this one serves rank 0 and the API, the other rank 1. Memory
+# figures are per Spark.
+[[hardware]]
+gpu = "nvidia-gb10-pair"
+ram_class = 128
+measured = "measurements/deepseek-v4.1-flash-tensorfold-pair-gb10x2-128.toml"
+
+# Mia's AI Lab's EAQ v1 EXL3 quantization at 2.9 bits a weight (experts at 3 bits, 2 in layers 18-22, attention at 5),
+# with the vision tower and the DSpark draft blocks. Each rank's weight file is cut from it on its own Spark.
+[[artifacts]]
+repo = "Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw"
+revision = "45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b"
+license = "mit"
+files = ["*.safetensors", "*.json"]
+dest = "model"
+model = "."
+
+# Engram's n-gram tables, read unquantized from the base release's last two shards (203 GB). A decode round reads
+# about 70 random rows from them, so each Spark keeps its own copy on local disk.
+[[artifacts]]
+repo = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+revision = "1bae0e1088993b9b82de08f59de5be5a34e42170"
+license = "mit"
+files = ["model-00047-of-00048.safetensors", "model-00048-of-00048.safetensors", "model.safetensors.index.json", "config.json"]
+dest = "engram"
+
+# Rank 0 holds 98.9 GiB of weights and, with its KV pool, CUDA graphs and workspaces, about 104 GiB once loaded at a
+# 256K window, 105 at the model's full 1M (the compressed KV pool is about 0.9 GiB a rank per million positions). The
+# engine keeps 12.2 GiB of its own reserve free, which the desktop lives in.
+[[variant]]
+ctx = 1048576
+peak_ram_gib = 105
+peak_gpu_gib = 105
+
+[[variant]]
+ctx = 262144
+peak_ram_gib = 104
+peak_gpu_gib = 104
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+
+# Four streams share one pool of the window's positions; drafting from the checkpoint's own DSpark blocks is exact.
+[server]
+args = ["--parallel", "4", "--max-tokens", "32768", "--thinking", "--reasoning-effort", "high"]

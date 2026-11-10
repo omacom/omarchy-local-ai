@@ -1,0 +1,2 @@
+# Placeholder until tools/bench measures this recipe on a Spark pair; overwritten by it.
+recipe = "deepseek-v4.1-flash-tensorfold-pair"

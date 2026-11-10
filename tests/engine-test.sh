@@ -303,8 +303,8 @@ pair_rt = copy.deepcopy(runtime)
 pair_rt.update(command=["server", "serve"], listen={"host": "--host", "port": "--port"}, reserved=["--host", "--port", "API_KEY"],
                run={"devices": ["cdi-nvidia", "infiniband"], "network": "fabric", "memlock": "unlimited"},
                health={"probe": ["curl", "http://127.0.0.1:@PORT@/health"]},
-               pair={"nodes": 2, "master_port": 29620, "state": "/state",
-                     "env": {"NCCL_COMM_ID": "@MASTER_ADDR@:@MASTER_PORT@", "TF_RANK": "@RANK@"}})
+               pair={"nodes": 2, "master_port": 29620, "prepare": ["prep", "@RANK@", "@WORLD@"], "worker": ["lanes", "@RANK@", "@MASTER_ADDR@"],
+                     "env": {"TF_GID": "@GID_INDEX@"}, "head_env": {"TF_MASTER": "@MASTER_ADDR@"}})
 check("a paired runtime fixture is accepted", not a.validate_runtime("pair", pair_rt), "\n".join(a.validate_runtime("pair", pair_rt)))
 for name, mutate, fragment in (
   ("host network without a pair", lambda r: r.pop("pair"), "only for runtimes with a [pair]"),
@@ -314,7 +314,7 @@ for name, mutate, fragment in (
   ("unreserved bind flags", lambda r: r.update(reserved=["API_KEY"]), "must reserve"),
   ("NCCL settings in the runtime", lambda r: r["pair"]["env"].update(NCCL_IB_HCA="mlx5_0"), "NCCL_"),
   ("three nodes", lambda r: r["pair"].update(nodes=3), "only 2"),
-  ("no state path", lambda r: r["pair"].pop("state"), "pair.state"),
+  ("a served folder outside /prepared", lambda r: r["pair"].update(model="/prepared/../etc"), "under /prepared"),
   ("a state path over the models", lambda r: r["pair"].update(state="/models"), "pair.state"),
   ("the link's NCCL interface", lambda r: r["pair"]["env"].update(NCCL_SOCKET_IFNAME="eth0"), "NCCL_SOCKET_IFNAME"),
 ):
@@ -343,22 +343,30 @@ pair_text = a.render_container("paired", paired, pair_rt, paired["variant"][0], 
 pair_port = a.port_for("paired")
 check("the pair unit shares the host network and publishes nothing", "Network=host" in pair_text and "PublishPort" not in pair_text)
 check("the pair unit binds its API to loopback on the model's port", f'"--host" "127.0.0.1" "--port" "{pair_port}"' in pair_text and f"127.0.0.1:{pair_port}/health" in pair_text)
-check("the pair unit mounts rank 0's state folder writable and reads the link from its environment file", f"models/paired/{'b' * 16}.rank0:/state\n" in pair_text and "EnvironmentFile=%h/.local/state/omarchy/agent-local/pair/paired.env" in pair_text)
+check("the pair unit mounts rank 0's inputs and reads the link from its environment file", f"models/paired/{a.rank_folder('b' * 16, 0, pair_rt)}:/prepared:ro" in pair_text and "EnvironmentFile=%h/.local/state/omarchy/agent-local/pair/paired.env" in pair_text)
 check("the pair unit starts and stops rank 1 with itself", "ExecStartPre=/usr/bin/env omarchy-agent-local link-worker start paired" in pair_text and "ExecStopPost=-/usr/bin/env omarchy-agent-local link-worker stop paired" in pair_text)
-_, rank_argv, _, _ = a.head_argv(pair_rt, paired, paired["variant"][0], {"model": "model"}, "paired")
-check("both ranks run the runtime's command, bound to loopback", rank_argv[-4:] == ["--host", "127.0.0.1", "--port", str(a.port_for("paired"))] and rank_argv[:2] == ["server", "serve"])
+check("a paired runtime may serve its prepared folder", '"--model" "/prepared/model"' in a.render_container("paired", paired, dict(pair_rt, pair=dict(pair_rt["pair"], model="/prepared/model")), paired["variant"][0], {"model": "model"}, pair_gpu, "b" * 16))
+same_rt = copy.deepcopy(pair_rt)
+for key in ("worker", "prepare"):
+  same_rt["pair"].pop(key)
+same_rt["pair"].update(state="/state", env={"NCCL_COMM_ID": "@MASTER_ADDR@:@MASTER_PORT@", "TF_RANK": "@RANK@"})
+check("a paired runtime may run the head's command on both ranks, with its own NCCL settings", not a.validate_runtime("same", same_rt), "\n".join(a.validate_runtime("same", same_rt)))
+same_text = a.render_container("paired", paired, same_rt, paired["variant"][0], {"model": "model"}, pair_gpu, "b" * 16)
+check("a state path mounts the rank folder writable", f"models/paired/{'b' * 16}.rank0:/state\n" in same_text)
+_, same_argv, _, _ = a.head_argv(same_rt, paired, paired["variant"][0], {"model": "model"}, "paired")
+check("rank 1's default command is the head's, bound to loopback", same_argv[-4:] == ["--host", "127.0.0.1", "--port", str(a.port_for("paired"))] and same_argv[:2] == ["server", "serve"])
 # Each rank gets its own link settings, and rank 1 the head's command inside the same restrictions.
-setup = {"schema": 1, "recipe_id": "paired", "runtime": pair_rt, "recipe": paired, "variant": paired["variant"][0], "roles": {"model": "model"},
+setup = {"schema": 1, "recipe_id": "paired", "runtime": same_rt, "recipe": paired, "variant": paired["variant"][0], "roles": {"model": "model"},
          "fileset": "e" * 16, "pair": {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob", "image_id": "f" * 64}}
 a.write_pair_setup(setup)
 here = {"addr": "10.99.1.1", "dev": "enp1", "hcas": ["rocep1", "roceP2"], "gid": "5"}
 there = {"addr": "10.99.1.2", "dev": "enp1", "hcas": ["rocep1", "roceP2"], "gid": "3"}
-with patch.object(a, "pair_link", return_value=(here, there)), patch.object(a, "peer_headroom") as headroom, patch.object(a, "pair_ssh") as ssh:
+with patch.object(a, "pair_link", return_value=(here, there)), patch.object(a, "peer_headroom") as headroom, patch.object(a, "pair_ssh") as ssh, patch.object(a, "pair_python"):
   a.pair_worker_start("paired")
 head_env = dict(line.split("=", 1) for line in Path(a.pair_env_path("paired")).read_text().splitlines())
 worker = shlex.split(ssh.call_args.args[1])
 worker_env = dict(worker[i + 1].split("=", 1) for i, word in enumerate(worker) if word == "-e")
-check("rank 0's environment is rank 0's side of the link", head_env == {"NCCL_COMM_ID": "10.99.1.1:29620", "TF_RANK": "0", "NCCL_SOCKET_IFNAME": "enp1", "NCCL_IB_HCA": "rocep1,roceP2", "NCCL_IB_GID_INDEX": "5"}, repr(head_env))
+check("rank 0's environment is rank 0's side of the link", head_env == {"NCCL_COMM_ID": "10.99.1.1:29620", "TF_RANK": "0", "TF_MASTER": "10.99.1.1", "NCCL_SOCKET_IFNAME": "enp1", "NCCL_IB_HCA": "rocep1,roceP2", "NCCL_IB_GID_INDEX": "5"}, repr(head_env))
 check("rank 1's environment is rank 1's side, same rendezvous", worker_env["TF_RANK"] == "1" and worker_env["NCCL_COMM_ID"] == "10.99.1.1:29620" and worker_env["NCCL_IB_GID_INDEX"] == "3" and "API_KEY" not in worker_env, repr(worker_env))
 check("rank 1 starts on the peer as its user, with the head's command and the same restrictions",
       ssh.call_args.args[0] == "bob@10.99.1.2" and headroom.called
@@ -376,11 +384,53 @@ def fake_run(argv, **kwargs):
 manifest = {"fileset": "e" * 16}
 with patch.object(a.subprocess, "run", side_effect=fake_run), patch.object(a.subprocess, "Popen") as save, \
      patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as ssh, patch.object(a, "load_installing", return_value=None):
-  a.pair_setup("paired", manifest, pair_rt, {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob"})
+  a.pair_setup("paired", manifest, same_rt, {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob"})
 rsync = next(argv for argv in ran if argv[0] == "rsync")
 check("setup records the peer and the image by ID", manifest["pair"] == {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob", "image_id": "f" * 64})
 check("setup copies the file set to the peer, not an image it already has", not save.called and rsync[-1] == f"bob@10.99.1.2:/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}/")
 check("setup makes both ranks' state folders", Path(a.rank_dir("paired", "e" * 16, 0)).is_dir() and any(f"{'e' * 16}.rank1" in call.args[1] for call in ssh.call_args_list))
+# Prepared files are a generation per image and prepare command, so an update never rewrites the running setup's.
+updated = dict(pair_rt, image=pair_rt["image"].replace("a" * 64, "b" * 64))
+check("a runtime update prepares into its own generation", a.rank_folder("e" * 16, 0, pair_rt) != a.rank_folder("e" * 16, 0, updated) and a.rank_folder("e" * 16, 0, same_rt) == "e" * 16 + ".rank0")
+base = Path(a.data_dir(), "models", "gen")
+old_gen, new_gen = a.rank_folder("e" * 16, 0, pair_rt), a.rank_folder("e" * 16, 0, updated)
+for name in ("e" * 16, old_gen, new_gen):
+  (base / name).mkdir(parents=True, exist_ok=True)
+with patch.object(a, "load_model", return_value={"runtime": updated}):
+  a.prune_filesets("gen", "e" * 16)
+check("pruning keeps only the committed setup's generation", sorted(p.name for p in base.iterdir()) == sorted(["e" * 16, new_gen]))
+# Prepare runs once per rank, without network, and a failure stops the setup.
+ran = []
+def fake_prepare(argv, **kwargs):
+  ran.append(argv)
+  return SimpleNamespace(returncode=0, stdout="f" * 64 + "\n", stderr="")
+with patch.object(a.subprocess, "run", side_effect=fake_prepare), patch.object(a.subprocess, "Popen"), \
+     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")), patch.object(a, "load_installing", return_value=None):
+  a.pair_setup("paired", {"fileset": "e" * 16}, pair_rt, {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob"})
+prepares = [argv for argv in ran if any(word == "prep" or " prep " in word for word in argv)]
+check("prepare runs for rank 0 here and rank 1 on the peer, without network",
+      len(prepares) == 2 and prepares[0][-3:] == ["prep", "0", "2"] and "none" in prepares[0]
+      and "prep 1 2" in " ".join(prepares[1]) and "--network none" in " ".join(prepares[1]), repr(prepares))
+with patch.object(a.subprocess, "run", side_effect=lambda argv, **k: SimpleNamespace(returncode=1 if "prep" in argv else 0, stdout="f" * 64, stderr="")), \
+     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")), patch.object(a, "load_installing", return_value=None):
+  raises("a failed prepare stops the setup", lambda: a.pair_setup("paired", {"fileset": "e" * 16}, pair_rt, {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob"}), "Preparing rank 0")
+# Disk for the prepared files is checked on both Sparks before anything is written, and
+# prepare containers carry names remove can stop.
+big = dict(pair_rt, pair=dict(pair_rt["pair"], prepared_gib=100))
+ran.clear()
+with patch.object(a.subprocess, "run", side_effect=fake_prepare), patch.object(a, "load_installing", return_value=None), \
+     patch.object(a.shutil, "disk_usage", return_value=SimpleNamespace(free=500 * 2**30)), \
+     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="%d\n0\n" % (50 * 2**30), stderr="")) as disk:
+  raises("a peer without room for the files and prepared inputs stops setup first", lambda: a.pair_setup("paired", {"fileset": "e" * 16, "files": [{"size": 10 * 2**30}]}, big, {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob"}), "spark2 has 50 GiB free")
+measured = disk.call_args_list[0].args[1].split("du -sbc ", 1)[1].split(" 2>")[0]
+check("the peer credits only the file set and the current generation as already there",
+      shlex.split(measured) == [f"/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}", a.rank_dir("paired", "e" * 16, 1, "/home/bob", big)], measured)
+check("nothing is prepared or copied when the disk check fails", not [argv for argv in ran if "prep" in argv or argv[:1] == ["rsync"]], repr(ran))
+check("prepare containers are named for their recipe and rank", "--name" in prepares[0] and a.prepare_name("paired", 0) in prepares[0] and a.prepare_name("paired", 1) in " ".join(prepares[1]))
+with patch.object(a.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as local, patch.object(a, "pair_ssh") as remote, patch.object(a, "known_models", return_value=[]):
+  a.pair_remove({"recipe_id": "paired", "pair": {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob", "image_id": "c" * 64}})
+check("remove stops a prepare a cancelled setup left running, here and on the peer",
+      any(call.args[0] == ["podman", "rm", "-f", a.prepare_name("paired", 0)] for call in local.call_args_list) and a.prepare_name("paired", 1) in remote.call_args.args[1])
 check("the pair unit keeps the container restrictions", all(line in pair_text for line in ("ReadOnly=true", "DropCapability=all", "NoNewPrivileges=true", "AddDevice=/dev/infiniband")))
 if generator:
   quadlets = Path(a.quadlet_dir())

@@ -46,7 +46,7 @@ The real records are the examples and source of values:
 | --- | --- |
 | [catalog.toml](../catalog.toml) | Schema 1 and the release version. |
 | [recipes/](../recipes/) | Name, summary, runtime, pinned artifacts, measured hardware, context variants, sampling and optional server arguments. Vendor names the panel logo; architecture is `dense` or `moe`; `input` is `["text"]` (the default) or `["text", "image"]`, which the agent overlays declare so agents can send screenshots. |
-| [runtimes/](../runtimes/) | Digest-pinned image, tier, port, command, standard input mappings, reserved options and nonempty `health.probe` argv. A paired runtime adds `listen` (its bind flags), `@PORT@` in its probe and a `[pair]` table: `nodes = 2`, `master_port`, the `state` path where each rank's own folder is mounted writable for the server's caches, and `env` for both ranks (any names but the link's `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA` and `NCCL_IB_GID_INDEX`, which the engine sets), whose values may hold `@RANK@`, `@WORLD@`, `@MASTER_ADDR@`, `@MASTER_PORT@` and `@RDMA_DEVICES@`. Both ranks run the runtime's command with the same arguments. |
+| [runtimes/](../runtimes/) | Digest-pinned image, tier, port, command, standard input mappings, reserved options and nonempty `health.probe` argv. A paired runtime adds `listen` (its bind flags), `@PORT@` in its probe and a `[pair]` table: `nodes = 2`, `master_port`, optional `prepare` and `worker` commands (without one, rank 1 runs the head's own invocation, for servers that compare the ranks' arguments), an optional served `model` under `/prepared`, an optional `state` path where each rank's folder is mounted writable for the server's caches (else read-only at `/prepared`), and `env`, `head_env` and `worker_env` (any names but the link's `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA` and `NCCL_IB_GID_INDEX`, which the engine sets), whose values may hold `@RANK@`, `@WORLD@`, `@MASTER_ADDR@`, `@MASTER_PORT@`, `@CTX@`, `@RDMA_DEVICES@`, `@GID_INDEX@` and `@SOCKET_IFNAME@`. |
 | [reviews/](../reviews/) | Third-party image digest, publisher, reviewer, date, license URL/hash and checked properties. |
 | [measurements/](../measurements/) | Hardware evidence, artifact identities, context, memory, load time and short, long and code-edit prompt timings. |
 | [best.toml](../best.toml) | Unique classes requiring both `gpu` and `ram_class`, with an ordered list of measured recipes. |
@@ -136,11 +136,12 @@ NetworkManager (finishing a half-addressed cable on a re-run), and where ufw is 
 lets in, on each rail port the ranks use, only the other end's address (the ranks'
 rendezvous and NCCL sockets), ahead of Omarchy's SSH rate limit. `use` of a paired recipe:
 
-1. materializes the file set here, as for any recipe, with rank 0's state folder
-   `models/<recipe>/<fileset>.rank0` beside it;
-2. copies the image to the peer (`podman save | podman load`, by image ID) unless it
+1. materializes the file set here, as for any recipe;
+2. runs the runtime's `prepare` command for rank 0 in a container without network,
+   the file set read-only at `/models`, writing `models/<recipe>/<fileset>.rank0`;
+3. copies the image to the peer (`podman save | podman load`, by image ID) unless it
    has it, and the file set with rsync over the cable;
-3. makes rank 1's state folder there, and drops older file sets.
+4. runs `prepare` for rank 1 there into `<fileset>.rank1`, and drops older file sets.
 
 The head unit runs rank 0. Its `ExecStartPre` (`link-worker start`) reads the link as
 it is now (each side's netdev, address, RoCE devices and the RoCE v2 GID index of its

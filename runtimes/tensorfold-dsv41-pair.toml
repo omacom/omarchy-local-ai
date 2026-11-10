@@ -1,0 +1,64 @@
+# DeepSeek-V4.1-Flash across two DGX Sparks: TensorFold's native Zig engine from BertholomusAI's fork (branch
+# deepseek-v41-zig) with MiaAI-Lab's recipe patches and BertholomusAI's kernel kit, built on NVIDIA's PyTorch container
+# by omacom/tensorfold-dsv41-image. Rank 0 is tensorfold-native serve, the API, on this machine; rank 1 is
+# tf-dsv41-lanes on the paired machine. They rendezvous over the ConnectX-7 cable (TCP on master_port) and exchange a
+# decode round's activations over RoCE on both rails. Settings are MiaAI-Lab's start.sh defaults, which its
+# measurements were taken with.
+image = "ghcr.io/omacom/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
+tier = "third-party"
+review = "reviews/tensorfold-dsv41-5692a64c3008.toml"
+port = 8888
+command = ["tensorfold-native", "serve", "--backend", "cuda", "--no-update-check"]
+listen = { host = "--host", port = "--port" }
+health = { probe = ["curl", "-fsS", "--max-time", "4", "http://127.0.0.1:@PORT@/health"] }
+run = { devices = ["cdi-nvidia", "infiniband"], memlock = "unlimited", network = "fabric", shm_size_gib = 16 }
+reserved = ["--host", "--port", "--api-key", "--api-key-file", "--allowed-host", "--allowed-origin", "--learn", "--learn-dir", "--learn-conversations", "--recall", "--recall-dir", "--record", "--dashboard", "--metrics-open", "--speed-up", "--vision-urls", "--chat-template", "TENSORFOLD_API_KEY", "TENSORFOLD_NO_UPDATE_CHECK", "TENSORFOLD_MEMORY_RESERVE_GIB", "HF_HUB_OFFLINE", "HF_TOKEN"]
+
+[inputs]
+model = { positional = true }
+ctx = { arg = "--context" }
+alias = { arg = "--name" }
+key = { env = "TENSORFOLD_API_KEY" }
+temperature = { arg = "--temperature" }
+top_p = { arg = "--top-p" }
+top_k = { arg = "--top-k" }
+
+[pair]
+nodes = 2
+master_port = 29620
+# Each rank's inputs, from the checkpoint alone: the kit with this checkpoint's RoPE tables, Engram's token map and
+# the rank's weight file (/opt/omarchy/prepare in the image).
+prepare = ["/opt/omarchy/prepare", "@RANK@", "@WORLD@"]
+# What prepare writes on each Spark: the rank's weight file (99 GiB) and the kit and token map.
+prepared_gib = 100
+# Rank 0 serves the checkpoint linked beside MiaAI-Lab's chat template (the release ships its chat format as Python),
+# a folder prepare makes.
+model = "/prepared/model"
+# Rank 1. Its pool is rank 0's context; its streams are the recipe's --parallel.
+worker = ["tf-dsv41-lanes", "/models/model", "/prepared/rank-cache", "@RANK@", "@WORLD@", "@MASTER_ADDR@", "@MASTER_PORT@", "/prepared/kit",
+          "--engram", "/models/engram", "--token-map", "/prepared/dsv41_token_map.json", "--pool", "@CTX@", "--streams", "4",
+          "--drafts", "1", "--graphs", "1", "--graph-cap", "128", "--side", "1", "--prefetch", "1", "--aio", "1", "--rdma", "@RDMA_DEVICES@"]
+
+[pair.env]
+TF_DS_REPLAY_FLOOR = "1"
+TF_DS_STREAMS = "4"
+TF_RDMA_IDLE_S = "2"
+TF_RDMA_NAP_US = "500"
+TF_RDMA_GID_INDEX = "@GID_INDEX@"
+TF_DS_PREFILL_INTERLEAVE_MS = "250"
+
+[pair.head_env]
+TF_TP_WORLD = "@WORLD@"
+TF_TP_MASTER = "@MASTER_ADDR@"
+TF_TP_PORT = "@MASTER_PORT@"
+TF_RDMA_DEVICES = "@RDMA_DEVICES@"
+TF_DS_RANK_CACHE = "/prepared/rank-cache"
+TF_DS_KIT = "/prepared/kit"
+TENSORFOLD_CUDA_KERNELS = "/prepared/kit/aot"
+TF_DS_ENGRAM = "/models/engram"
+TF_DS_TOKEN_MAP = "/prepared/dsv41_token_map.json"
+TF_DS_GRAPHS = "1"
+TF_DS_GRAPH_CAP = "128"
+TF_DS_HC_SIDE = "1"
+TF_DS_L2_PREFETCH = "1"
+TF_DS_ENGRAM_AIO = "1"

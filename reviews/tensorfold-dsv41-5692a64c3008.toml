@@ -1,0 +1,12 @@
+image = "ghcr.io/omacom/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
+publisher = "Omacom (built from omacom/tensorfold-dsv41-image: BertholomusAI's TensorFold fork with MiaAI-Lab's DeepSeek-V4.1-Flash pair recipe)"
+reviewer = "Claude Code for David Heinemeier Hansson"
+date = "2026-11-09"
+version = "TensorFold fork deepseek-v41-zig fbbc9713 (tensorfold-native 1.0.2) with 53 recipe patches at MiaAI-Lab c7f2b85; inputs tools 59402086; kernel kit abe07c7d"
+source = "open"
+license_url = "https://raw.githubusercontent.com/bertholomus/TensorFold/fbbc97132cd004237d9887b8d3185896efaedc5c/LICENSE"
+license_sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+checked = [
+  "license: the fork is Apache-2.0 (its LICENSE at fbbc9713 equals upstream TensorFold's); MiaAI-Lab's recipe, whose patches and chat template the image carries, is Apache-2.0; the kernel kit ships its own LICENSES (Apache-2.0, CUTLASS BSD-3-Clause, ExLlamaV3, Triton and DeepSeek MIT, picojson BSD-2-Clause) in /opt/tensorfold/kit/LICENSES; NVIDIA's PyTorch container is under NVIDIA's container license",
+  "build: every input is pinned in the Containerfile: nvcr.io/nvidia/pytorch 26.07 (arm64) by digest, Zig 0.17.0 by SHA-256, the fork, inputs branch and kit by full commit (checked after fetch), the patches by content in the image repository; built with Podman on a DGX Spark (GB10) for sm_121",
+]
