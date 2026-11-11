@@ -1,3 +1,3 @@
 # The catalog ships with the engine; releases version both together.
 schema = 1
-version = "0.6.1"
+version = "0.6.2"
