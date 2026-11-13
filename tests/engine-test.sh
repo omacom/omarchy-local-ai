@@ -390,6 +390,11 @@ with patch.object(a, "platform_name", return_value="aarch64-gb10"), patch.object
   check("a Spark isn't also listed as a discrete GPU", [g["family"] for g in a.machine_profile()["gpus"]] == ["nvidia-gb10"])
 with patch.object(a, "nvidia_free_gib", return_value=20.5), patch.object(a, "meminfo", return_value={"MemAvailable": 60 * 2**30}):
   check("free memory on a discrete GPU is its VRAM free", a.free_memory(found[0]) == (60.0, 20.5))
+with patch.object(a, "nvidia_free_gib", return_value=None), patch.object(a, "meminfo", return_value={"MemAvailable": 60 * 2**30}):
+  check("a failed VRAM reading counts as no free memory, not a free card", a.free_memory(found[0]) == (60.0, 0.0))
+cdi_rt = {"run": {"devices": ["cdi-nvidia"]}}
+check("a discrete GPU's container gets only that card", a.device_lines(cdi_rt, found[1]) == ["AddDevice=nvidia.com/gpu=1"])
+check("a unified GPU's container gets the whole device", a.device_lines(cdi_rt, {"vendor": "nvidia", "family": "nvidia-gb10", "unified": True}) == ["AddDevice=nvidia.com/gpu=all"])
 check("VRAM rounds up to its class (23.99 GiB is 24, 200 caps at 96)", a.vram_class(24) == 24 and a.vram_class(23.99) == 24 and a.vram_class(11) == 12 and a.vram_class(200) == 96)
 vgpu, rgpu = found[0], {"vendor": "nvidia", "family": "nvidia-gb10", "unified": True, "memory_gib": 120}
 vprof = {"platform": "x86", "ram_class": 96, "ram_gib": 78, "gpus": [vgpu]}
