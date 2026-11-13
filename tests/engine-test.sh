@@ -385,11 +385,23 @@ check("nvidia-smi output that isn't a table lists nothing", a.nvidia_gpus("") ==
 check("a workstation card keeps its words in the family", a.nvidia_family("NVIDIA RTX PRO 6000 Blackwell Workstation Edition") == "nvidia-rtxpro6000blackwellworkstationedition")
 with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "nvidia_gpus", return_value=found[:1]), patch.object(a, "meminfo", return_value={"MemTotal": 78 * 2**30}):
   prof = a.machine_profile()
-  check("an x86 machine with a 3090 profiles it beside its own RAM", prof["gpus"][0]["family"] == "nvidia-rtx3090" and prof["ram_class"] == 96)
+  check("an x86 machine with a 3090 profiles it beside its own RAM", prof["gpus"][0]["family"] == "nvidia-rtx3090" and prof["ram_class"] == 96 and prof["gpus"][0]["vram_class"] == 24)
 with patch.object(a, "platform_name", return_value="aarch64-gb10"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "nvidia_gpus", side_effect=AssertionError("a Spark's GPU is unified")), patch.object(a, "meminfo", return_value={"MemTotal": 120 * 2**30}):
   check("a Spark isn't also listed as a discrete GPU", [g["family"] for g in a.machine_profile()["gpus"]] == ["nvidia-gb10"])
 with patch.object(a, "nvidia_free_gib", return_value=20.5), patch.object(a, "meminfo", return_value={"MemAvailable": 60 * 2**30}):
   check("free memory on a discrete GPU is its VRAM free", a.free_memory(found[0]) == (60.0, 20.5))
+check("VRAM rounds up to its class (23.99 GiB is 24, 200 caps at 96)", a.vram_class(24) == 24 and a.vram_class(23.99) == 24 and a.vram_class(11) == 12 and a.vram_class(200) == 96)
+vgpu, rgpu = found[0], {"vendor": "nvidia", "family": "nvidia-gb10", "unified": True, "memory_gib": 120}
+vprof = {"platform": "x86", "ram_class": 96, "ram_gib": 78, "gpus": [vgpu]}
+check("a discrete GPU is matched on VRAM, a unified one on RAM", a.memory_class(vprof, vgpu) == 24 and a.memory_class(vprof, rgpu) == 96)
+vrecipe = {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}
+check("a recipe measured at 24 GB VRAM qualifies on a 3090 whatever the RAM", a.qualified(vrecipe, vprof, vgpu) and a.qualified(vrecipe, dict(vprof, ram_class=32), vgpu))
+check("a recipe measured at 16 GB VRAM doesn't qualify on a 24 GB card", not a.qualified({"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 16}]}, vprof, vgpu))
+check("a RAM-class entry doesn't qualify a discrete GPU", not a.qualified({"hardware": [{"gpu": "nvidia-rtx3090", "ram_class": 96}]}, vprof, vgpu))
+check("a hardware entry names exactly one class", a.class_errors({"gpu": "x", "ram_class": 64, "vram_class": 24}, "w") and a.class_errors({"gpu": "x"}, "w") and not a.class_errors({"gpu": "x", "vram_class": 24}, "w") and a.class_errors({"vram_class": 64}, "w") and a.class_errors({"ram_class": 24}, "w"))
+vbest = {"class": [{"gpu": "nvidia-rtx3090", "vram_class": 24, "recipes": ["model"]}]}
+check("best.toml matches a discrete GPU on VRAM", a.match_class(vbest, vprof, vgpu) is vbest["class"][0] and a.match_class(vbest, vprof, rgpu) is None)
+check("best.toml accepts a vram_class and rejects both", not any("class" in e and "must be" in e for e in a.validate_best(vbest, {"model": {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}})) and a.validate_best({"class": [dict(vbest["class"][0], ram_class=64)]}, {"model": vrecipe}))
 positional_rt = copy.deepcopy(runtime)
 positional_rt["command"] = ["server", "serve"]
 positional_rt["inputs"]["model"] = {"positional": True}

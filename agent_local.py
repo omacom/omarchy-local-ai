@@ -79,6 +79,9 @@ if ! log=$(limine-mkinitcpio 2>&1) || grep -q 'mkinitcpio failed for kernel' <<<
 fi
 """
 RAM_CLASSES = (32, 64, 96, 128, 192, 256, 512)
+# A discrete GPU is classed by its own VRAM (`vram_class`), not by the system's RAM: the RAM
+# only has to hold the host side (`peak_ram_gib`, checked beside it). Unified-memory GPUs keep `ram_class`.
+VRAM_CLASSES = (8, 12, 16, 24, 32, 48, 80, 96)
 STANDARD_INPUTS = ("model", "draft", "text_encoder", "vae", "audio_vae", "lora", "ctx", "alias", "key", "temperature", "top_p", "top_k")
 # The files a recipe's artifacts can name, each reaching the server through the runtime input of
 # the same name: the model, and a draft for speculative decoding (text) or the text encoder and
@@ -408,6 +411,7 @@ def nvidia_gpus(smi_output=None):
       "vram_gib": round(mib / 1024, 2),
       "gtt_gib": 0,
       "unified": False,
+      "vram_class": vram_class(mib / 1024),
       "memory_gib": round(mib / 1024, 2),
       "sysfs": "",
     })
@@ -427,6 +431,43 @@ def ram_class(ram_gib):
     if ram_gib <= size:
       return size
   return RAM_CLASSES[-1]
+
+
+def vram_class(vram_gib):
+  for size in VRAM_CLASSES:
+    if vram_gib <= size:
+      return size
+  return VRAM_CLASSES[-1]
+
+
+def memory_class(profile, gpu):
+  """The class this GPU is matched on: its VRAM if it has its own, else the machine's RAM."""
+  return gpu.get("vram_class") or profile["ram_class"]
+
+
+def entry_class(entry):
+  """The class a [[hardware]] or best.toml [[class]] entry names."""
+  return entry.get("vram_class") or entry.get("ram_class")
+
+
+def class_text(profile, gpu):
+  return f"{gpu['vram_class']} GB VRAM" if gpu.get("vram_class") else f"{profile['ram_class']} GB"
+
+
+def entry_class_text(entry):
+  return f"{entry['vram_class']} GB VRAM" if entry.get("vram_class") else f"{entry.get('ram_class')} GB"
+
+
+def class_errors(entry, where):
+  """Exactly one of ram_class and vram_class, each from its list."""
+  has_ram, has_vram = "ram_class" in entry, "vram_class" in entry
+  if has_ram == has_vram:
+    return [f"{where}: needs exactly one of ram_class (one of {RAM_CLASSES}) and vram_class (one of {VRAM_CLASSES})"]
+  if has_ram and entry["ram_class"] not in RAM_CLASSES:
+    return [f"{where}.ram_class: must be one of {RAM_CLASSES}"]
+  if has_vram and entry["vram_class"] not in VRAM_CLASSES:
+    return [f"{where}.vram_class: must be one of {VRAM_CLASSES}"]
+  return []
 
 
 def machine_profile():
@@ -937,8 +978,8 @@ def validate_recipe(rid, recipe, runtimes, root=None):
     errors.append(f"{where}.hardware: needs at least one [[hardware]] entry")
     hardware = []
   for index, entry in enumerate(hardware):
-    if not isinstance(entry, dict) or not isinstance(entry.get("gpu"), str) or entry.get("ram_class") not in RAM_CLASSES:
-      errors.append(f"{where}.hardware[{index}]: needs gpu and ram_class (one of {RAM_CLASSES})")
+    if not isinstance(entry, dict) or not isinstance(entry.get("gpu"), str) or class_errors(entry, ""):
+      errors.append(f"{where}.hardware[{index}]: needs gpu and exactly one of ram_class (one of {RAM_CLASSES}) and vram_class (one of {VRAM_CLASSES})")
       continue
     measured = entry.get("measured")
     if _safe_relpath(measured, f"{where}.hardware[{index}].measured", errors) and root and not os.path.isfile(os.path.join(root, measured)):
@@ -1072,13 +1113,12 @@ def validate_best(best, recipes):
     if not isinstance(entry, dict):
       errors.append(f"{where}: must be a table")
       continue
-    if entry.get("ram_class") not in RAM_CLASSES:
-      errors.append(f"{where}.ram_class: must be one of {RAM_CLASSES}")
+    errors.extend(class_errors(entry, where))
     if not _safe_string(entry.get("gpu"), f"{where}.gpu", errors):
       continue
     if "platform" in entry:
-      errors.append(f"{where}.platform: not a class selector; use gpu and ram_class")
-    selectors = (gpu_class(entry.get("gpu")), entry.get("ram_class"))
+      errors.append(f"{where}.platform: not a class selector; use gpu and ram_class or vram_class")
+    selectors = (gpu_class(entry.get("gpu")), entry_class(entry))
     if selectors in seen:
       errors.append(f"{where}: same selectors as class[{seen[selectors]}]")
     seen[selectors] = index
@@ -1104,7 +1144,7 @@ def validate_best(best, recipes):
         errors.append(f"{where}.{field}: '{name}' is of kind {recipe_kind(recipe)}, not {kind}")
         continue
       qualified = any(
-        hw.get("ram_class") == entry.get("ram_class")
+        entry_class(hw) == entry_class(entry)
         and gpu_class(hw.get("gpu")) == gpu_class(entry.get("gpu"))
         for hw in recipe.get("hardware", []) if isinstance(hw, dict)
       )
@@ -1217,7 +1257,7 @@ def compatibility(catalog, rid, profile, gpu, ctx=None):
 
 def match_class(best, profile, gpu):
   return next((entry for entry in best["class"]
-               if gpu_class(entry["gpu"]) == gpu_class(gpu["family"]) and entry["ram_class"] == profile["ram_class"]), None)
+               if gpu_class(entry["gpu"]) == gpu_class(gpu["family"]) and entry_class(entry) == memory_class(profile, gpu)), None)
 
 
 def resolve_best(catalog, profile, gpu=None, ctx=None, field="recipes"):
@@ -1245,7 +1285,7 @@ def _resolve_class(catalog, profile, gpu, ctx=None, field="recipes"):
   if entry is None:
     near = [rid for rid, recipe in catalog.recipes.items() if any(gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) for hw in recipe.get("hardware", []))]
     raise LocalError(
-      f"No recommendation for this machine yet ({gpu['family']}, {profile['ram_class']} GB, {profile['platform']}).\n"
+      f"No recommendation for this machine yet ({gpu['family']}, {class_text(profile, gpu)}, {profile['platform']}).\n"
       + (f"Recipes measured on the same GPU family: {', '.join(near)}" if near else "No recipes are measured on this GPU family yet.")
     )
   if not entry.get(field):
@@ -1327,7 +1367,7 @@ def load_measurement(catalog, recipe, profile, gpu):
   """The bench numbers the catalog recorded for this recipe on this machine class: its own
   family's where it has them, else those of a family sharing the class (a GB10's for an N1x)."""
   matches = [hw for hw in recipe.get("hardware", [])
-             if gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) and hw.get("ram_class") == profile["ram_class"] and hw.get("platform") in (None, profile["platform"])]
+             if gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) and entry_class(hw) == memory_class(profile, gpu) and hw.get("platform") in (None, profile["platform"])]
   for hw in sorted(matches, key=lambda hw: hw.get("gpu") != gpu["family"])[:1]:
     try:
       with open(os.path.join(catalog.root, hw["measured"]), "rb") as handle:
@@ -3317,7 +3357,7 @@ def cmd_use(argv):
     gpu = recipe_gpu(profile, catalog.recipes[rid], args.gpu, catalog.runtimes.get(catalog.recipes[rid].get("runtime")))
     for skipped_id, reason in skipped:
       say(f"Skipping {skipped_id}: {reason}")
-    say(f"Best {args.kind} model for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")
+    say(f"Best {args.kind} model for this machine ({gpu['family']}, {class_text(profile, gpu)}): {rid}")
   else:
     rid = args.target
     recipe = _lookup_recipe(catalog, rid)
@@ -3513,9 +3553,11 @@ def cmd_list(argv):
   if args.json:
     print(json.dumps(rows, indent=2))
     return 0
-  gpu = profile["gpus"][0]["family"] if profile["gpus"] else "no GPU"
+  first = profile["gpus"][0] if profile["gpus"] else None
+  gpu = first["family"] if first else "no GPU"
+  memory = class_text(profile, first) if first else f"{profile['ram_class']} GB"
   paired = f" · linked to {profile['pair']['host']}" if profile.get("pair") else ""
-  say(f"This machine: {gpu}, {profile['ram_class']} GB, {profile['platform']}{paired}")
+  say(f"This machine: {gpu}, {memory}, {profile['platform']}{paired}")
   for row in rows:
     marks = [mark for mark, on in (("best", row["best"]), ("running", row["active"]), ("installed", row["installed"])) if on]
     tier = f" · third-party ({row['publisher']})" if row["tier"] == "third-party" else ""
