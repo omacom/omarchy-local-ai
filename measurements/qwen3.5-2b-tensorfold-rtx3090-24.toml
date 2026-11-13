@@ -1,0 +1,50 @@
+recipe = "qwen3.5-2b-tensorfold"
+measured_at = "2026-11-13"
+image = "ghcr.io/bmaltais/tensorfold-x86@sha256:bc27ae10fd58e139dc1529eddc8c0af8961cdbd6e664f86485e5f5ccdc9aaf96"
+ctx = 131072
+load_seconds = 3.0
+fileset = "2d21738218f9da46"
+method = "tools/bench: 1 warmup, then a short prompt, a ~32K-token prompt from bench/context.txt and a code-copying edit of bench/edit.py.txt, temperature 0, enable_thinking false, 512 tokens out, streamed"
+
+[machine]
+platform = "x86"
+gpu = "nvidia-rtx3090"
+ram_class = 96
+vram_class = 24
+system = "ASUS System Product Name"
+kernel = "7.2.15-2-omarchy"
+cpu = "AMD Ryzen 5 5600X 6-Core Processor"
+gpu_driver = "615.78.08"
+
+[memory]
+observed_at_load_gib = 0.4
+min_available_during_bench_gib = 65.0
+total_gib = 78.4
+
+[short]
+prompt_tokens = 41
+completion_tokens = 251
+ttft_s = 0.02
+prefill_tok_s = 2078.6
+decode_tok_s = 413.1
+total_s = 0.62
+
+[long]
+prompt_tokens = 31705
+completion_tokens = 512
+ttft_s = 1.73
+prefill_tok_s = 18306.8
+decode_tok_s = 1118.7
+total_s = 2.19
+
+[edit]
+prompt_tokens = 2306
+completion_tokens = 512
+ttft_s = 0.1
+prefill_tok_s = 23059.6
+decode_tok_s = 4750.1
+total_s = 0.21
+
+[[artifacts]]
+repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
+revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"

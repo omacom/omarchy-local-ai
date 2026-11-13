@@ -49,7 +49,7 @@ The real records are the examples and source of values:
 | [runtimes/](../runtimes/) | Digest-pinned image, tier, port, command, standard input mappings, reserved options and nonempty `health.probe` argv. A paired runtime adds `listen` (its bind flags), `@PORT@` in its probe and a `[pair]` table: `nodes = 2`, `master_port`, the `state` path where each rank's own folder is mounted writable for the server's caches, and `env` for both ranks (any names but the link's `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA` and `NCCL_IB_GID_INDEX`, which the engine sets), whose values may hold `@RANK@`, `@WORLD@`, `@MASTER_ADDR@`, `@MASTER_PORT@` and `@RDMA_DEVICES@`. Both ranks run the runtime's command with the same arguments. |
 | [reviews/](../reviews/) | Third-party image digest, publisher, reviewer, date, license URL/hash and checked properties. |
 | [measurements/](../measurements/) | Hardware evidence, artifact identities, context, memory, load time and short, long and code-edit prompt timings. |
-| [best.toml](../best.toml) | Unique classes requiring both `gpu` and `ram_class`, with an ordered list of measured recipes. |
+| [best.toml](../best.toml) | Unique classes requiring `gpu` and one of `ram_class` or `vram_class`, with an ordered list of measured recipes. |
 
 IDs contain lowercase alphanumeric components separated by single dots or hyphens.
 Artifact repositories are `owner/name`, revisions are 40-hex commits, and files,
@@ -72,13 +72,17 @@ rejected. `validate <catalog-dir>` checks the records and referenced evidence;
 
 ## Lifecycle
 
-`use best` matches the GPU class and RAM class, tries the class's recipes
+`use best` matches the GPU class and its memory class, tries the class's recipes
 in order, checks runtime compatibility and measured hardware qualification, and
 chooses the largest fitting context, and at the same context the variant with the larger memory peak that fits.
 A GPU class is its family, except that the N1x (`nvidia-n1x`) shares the GB10's (`nvidia-gb10`): the same
 chip, so what either can run depends only on memory. Measurements keep the family they ran on. `use <recipe>` supports `--ctx`, `--gpu`,
 `--seed` and explicit `--unqualified`; static memory limits still apply. Admission
 also checks current free RAM and GPU memory and reserves 8 GiB for the desktop.
+A discrete NVIDIA GPU (an RTX 3090, say) is its own family, `nvidia-rtx3090`, named from `nvidia-smi`, and
+its memory class is its VRAM rounded up to 8, 12, 16, 24, 32, 48, 80 or 96 GB: a `[[hardware]]` or `[[class]]`
+entry for it says `vram_class = 24`, not `ram_class`. System RAM then only has to hold the recipe's
+`peak_ram_gib`, which admission checks beside the VRAM. Unified-memory GPUs (GB10, N1x, Strix) keep `ram_class`.
 Use, start and removal are serialized. Several models can run at once on distinct,
 stable loopback ports, beginning at 11435.
 

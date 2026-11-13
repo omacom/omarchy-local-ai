@@ -1,0 +1,24 @@
+# TensorFold's native server, tensorfold-native 1.2.7, from its signed upstream x86_64 release with no
+# patches, for discrete NVIDIA GPUs (RTX 30 series and up: the release's CUDA kernels include sm_86).
+# Built from images/tensorfold-x86/Containerfile and published at ghcr.io/bmaltais/tensorfold-x86. Text only: no cuBLASLt (--vision), JPEG or WebP decoders.
+# Otherwise configured like the aarch64 runtime: `tensorfold-native serve` arguments, the model
+# directory bare, the key in TENSORFOLD_API_KEY. Unlike it, the image doesn't set
+# TENSORFOLD_MEMORY_RESERVE_GIB: that tunes the Spark's unified memory, not a card's VRAM.
+image = "ghcr.io/bmaltais/tensorfold-x86@sha256:bc27ae10fd58e139dc1529eddc8c0af8961cdbd6e664f86485e5f5ccdc9aaf96"
+tier = "third-party"
+review = "reviews/tensorfold-x86-bc27ae10fd58.toml"
+port = 8888
+command = ["tensorfold-native", "serve", "--host", "0.0.0.0", "--port", "8888", "--no-update-check"]
+health = { probe = ["curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8888/health"] }
+run = { devices = ["cdi-nvidia"], memlock = "unlimited" }
+reserved = ["--host", "--port", "--api-key", "--api-key-file", "--allowed-host", "--allowed-origin", "--learn", "--learn-dir", "--learn-conversations", "--recall", "--recall-dir", "--record", "--dashboard", "--metrics-open", "--speed-up", "--vision-urls", "TENSORFOLD_API_KEY", "TENSORFOLD_NO_UPDATE_CHECK", "TENSORFOLD_MEMORY_RESERVE_GIB", "HF_HUB_OFFLINE", "HF_TOKEN"]
+
+[inputs]
+model = { positional = true }
+draft = { arg = "--drafter" }
+ctx = { arg = "--context" }
+alias = { arg = "--name" }
+key = { env = "TENSORFOLD_API_KEY" }
+temperature = { arg = "--temperature" }
+top_p = { arg = "--top-p" }
+top_k = { arg = "--top-k" }

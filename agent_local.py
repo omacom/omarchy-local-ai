@@ -47,6 +47,9 @@ PROGRESS_PUBLISH_SECONDS = 0.5
 PROGRESS_WINDOW_SECONDS = 4
 NOT_ENOUGH_MEMORY = "Not enough memory to start model"
 RAM_CLASSES = (32, 64, 96, 128, 192, 256, 512)
+# A discrete GPU is classed by its own VRAM (`vram_class`), not by the system's RAM: the RAM
+# only has to hold the host side (`peak_ram_gib`, checked beside it). Unified-memory GPUs keep `ram_class`.
+VRAM_CLASSES = (8, 12, 16, 24, 32, 48, 80, 96)
 STANDARD_INPUTS = ("model", "draft", "ctx", "alias", "key", "temperature", "top_p", "top_k")
 GFX_FAMILIES = {"gfx1151": "amd-strix-halo", "gfx1150": "amd-strix-point"}
 # NVIDIA platforms whose GPU shares the system's memory. The N1x is the GB10's GPU in a
@@ -222,11 +225,93 @@ def amd_gpus(kfd_root="/sys/class/kfd/kfd/topology/nodes", drm_root="/sys/class/
   return gpus
 
 
+def nvidia_family(name):
+  """`nvidia-rtx3090` from "NVIDIA GeForce RTX 3090"; a name without a model number keeps its words."""
+  words = re.sub(r"^NVIDIA\s+(GeForce\s+)?", "", name.strip(), flags=re.I)
+  return "nvidia-" + (re.sub(r"[^a-z0-9]+", "", words.lower()) or "gpu")
+
+
+def nvidia_gpus(smi_output=None):
+  """Discrete NVIDIA GPUs, one per `nvidia-smi` row of "name, memory.total MiB". Their
+  memory is their own VRAM, apart from the system's, unlike the GB10's."""
+  if smi_output is None:
+    try:
+      smi_output = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+      return []
+  gpus = []
+  for index, line in enumerate(smi_output.splitlines()):
+    name, _, total = line.partition(",")
+    try:
+      mib = float(total)
+    except ValueError:
+      continue
+    gpus.append({
+      "vendor": "nvidia",
+      "family": nvidia_family(name),
+      "name": name.strip(),
+      "nvidia_index": index,
+      "render_node": "",
+      "vram_gib": round(mib / 1024, 2),
+      "gtt_gib": 0,
+      "unified": False,
+      "vram_class": vram_class(mib / 1024),
+      "memory_gib": round(mib / 1024, 2),
+      "sysfs": "",
+    })
+  return gpus
+
+
+def nvidia_free_gib(index):
+  try:
+    out = subprocess.run(["nvidia-smi", f"--id={index}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+    return float(out.strip()) / 1024
+  except (OSError, subprocess.SubprocessError, ValueError):
+    return None
+
+
 def ram_class(ram_gib):
   for size in RAM_CLASSES:
     if ram_gib <= size:
       return size
   return RAM_CLASSES[-1]
+
+
+def vram_class(vram_gib):
+  for size in VRAM_CLASSES:
+    if vram_gib <= size:
+      return size
+  return VRAM_CLASSES[-1]
+
+
+def memory_class(profile, gpu):
+  """The class this GPU is matched on: its VRAM if it has its own, else the machine's RAM."""
+  return gpu.get("vram_class") or profile["ram_class"]
+
+
+def entry_class(entry):
+  """The class a [[hardware]] or best.toml [[class]] entry names."""
+  return entry.get("vram_class") or entry.get("ram_class")
+
+
+def class_text(profile, gpu):
+  return f"{gpu['vram_class']} GB VRAM" if gpu.get("vram_class") else f"{profile['ram_class']} GB"
+
+
+def entry_class_text(entry):
+  return f"{entry['vram_class']} GB VRAM" if entry.get("vram_class") else f"{entry.get('ram_class')} GB"
+
+
+def class_errors(entry, where):
+  """Exactly one of ram_class and vram_class, each from its list."""
+  has_ram, has_vram = "ram_class" in entry, "vram_class" in entry
+  if has_ram == has_vram:
+    return [f"{where}: needs exactly one of ram_class (one of {RAM_CLASSES}) and vram_class (one of {VRAM_CLASSES})"]
+  if has_ram and entry["ram_class"] not in RAM_CLASSES:
+    return [f"{where}.ram_class: must be one of {RAM_CLASSES}"]
+  if has_vram and entry["vram_class"] not in VRAM_CLASSES:
+    return [f"{where}.vram_class: must be one of {VRAM_CLASSES}"]
+  return []
 
 
 def machine_profile():
@@ -238,6 +323,8 @@ def machine_profile():
   gpus = amd_gpus()
   if platform in NVIDIA_UNIFIED_FAMILIES:
     gpus.append({"vendor": "nvidia", "family": NVIDIA_UNIFIED_FAMILIES[platform], "render_node": "", "vram_gib": 0, "gtt_gib": 0, "unified": True, "memory_gib": round(ram, 2), "sysfs": ""})
+  else:
+    gpus.extend(nvidia_gpus())
   profile = {"platform": platform, "ram_gib": round(ram, 2), "ram_class": ram_class(ram), "gpus": gpus}
   pair = cached_pair(profile)
   if pair:
@@ -665,8 +752,8 @@ def validate_recipe(rid, recipe, runtimes, root=None):
     errors.append(f"{where}.hardware: needs at least one [[hardware]] entry")
     hardware = []
   for index, entry in enumerate(hardware):
-    if not isinstance(entry, dict) or not isinstance(entry.get("gpu"), str) or entry.get("ram_class") not in RAM_CLASSES:
-      errors.append(f"{where}.hardware[{index}]: needs gpu and ram_class (one of {RAM_CLASSES})")
+    if not isinstance(entry, dict) or not isinstance(entry.get("gpu"), str) or class_errors(entry, ""):
+      errors.append(f"{where}.hardware[{index}]: needs gpu and exactly one of ram_class (one of {RAM_CLASSES}) and vram_class (one of {VRAM_CLASSES})")
       continue
     measured = entry.get("measured")
     if _safe_relpath(measured, f"{where}.hardware[{index}].measured", errors) and root and not os.path.isfile(os.path.join(root, measured)):
@@ -784,13 +871,12 @@ def validate_best(best, recipes):
     if not isinstance(entry, dict):
       errors.append(f"{where}: must be a table")
       continue
-    if entry.get("ram_class") not in RAM_CLASSES:
-      errors.append(f"{where}.ram_class: must be one of {RAM_CLASSES}")
+    errors.extend(class_errors(entry, where))
     if not _safe_string(entry.get("gpu"), f"{where}.gpu", errors):
       continue
     if "platform" in entry:
-      errors.append(f"{where}.platform: not a class selector; use gpu and ram_class")
-    selectors = (gpu_class(entry.get("gpu")), entry.get("ram_class"))
+      errors.append(f"{where}.platform: not a class selector; use gpu and ram_class or vram_class")
+    selectors = (gpu_class(entry.get("gpu")), entry_class(entry))
     if selectors in seen:
       errors.append(f"{where}: same selectors as class[{seen[selectors]}]")
     seen[selectors] = index
@@ -804,7 +890,7 @@ def validate_best(best, recipes):
         errors.append(f"{where}: unknown recipe '{name}'")
         continue
       qualified = any(
-        hw.get("ram_class") == entry.get("ram_class")
+        entry_class(hw) == entry_class(entry)
         and gpu_class(hw.get("gpu")) == gpu_class(entry.get("gpu"))
         for hw in recipe.get("hardware", []) if isinstance(hw, dict)
       )
@@ -882,7 +968,7 @@ def runtime_supports(runtime, gpu):
 
 def qualified(recipe, profile, gpu):
   return any(
-    gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) and hw.get("ram_class") == profile["ram_class"] and hw.get("platform") in (None, profile["platform"])
+    gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) and entry_class(hw) == memory_class(profile, gpu) and hw.get("platform") in (None, profile["platform"])
     for hw in recipe.get("hardware", [])
   )
 
@@ -919,14 +1005,14 @@ def compatibility(catalog, rid, profile, gpu, ctx=None):
   if not runtime_supports(runtime, gpu):
     return None, f"runtime {recipe.get('runtime')} can't run on {gpu['family']}"
   if not qualified(recipe, profile, gpu):
-    classes = ", ".join(f"{hw.get('gpu')} {hw.get('ram_class')} GB" for hw in recipe.get("hardware", []))
-    return None, f"not measured on {gpu['family']} {profile['ram_class']} GB (measured: {classes})"
+    classes = ", ".join(f"{hw.get('gpu')} {entry_class_text(hw)}" for hw in recipe.get("hardware", []))
+    return None, f"not measured on {gpu['family']} {class_text(profile, gpu)} (measured: {classes})"
   return pick_variant(recipe, profile, gpu, ctx)
 
 
 def match_class(best, profile, gpu):
   return next((entry for entry in best["class"]
-               if gpu_class(entry["gpu"]) == gpu_class(gpu["family"]) and entry["ram_class"] == profile["ram_class"]), None)
+               if gpu_class(entry["gpu"]) == gpu_class(gpu["family"]) and entry_class(entry) == memory_class(profile, gpu)), None)
 
 
 def resolve_best(catalog, profile, gpu=None, ctx=None):
@@ -953,7 +1039,7 @@ def _resolve_class(catalog, profile, gpu, ctx=None):
   if entry is None:
     near = [rid for rid, recipe in catalog.recipes.items() if any(gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) for hw in recipe.get("hardware", []))]
     raise LocalError(
-      f"No recommendation for this machine yet ({gpu['family']}, {profile['ram_class']} GB, {profile['platform']}).\n"
+      f"No recommendation for this machine yet ({gpu['family']}, {class_text(profile, gpu)}, {profile['platform']}).\n"
       + (f"Recipes measured on the same GPU family: {', '.join(near)}" if near else "No recipes are measured on this GPU family yet.")
     )
   skipped = []
@@ -1026,7 +1112,7 @@ def recipe_installed(rid):
 def load_measurement(catalog, recipe, profile, gpu):
   """The bench numbers the catalog recorded for this recipe on this machine class."""
   for hw in recipe.get("hardware", []):
-    if gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) and hw.get("ram_class") == profile["ram_class"] and hw.get("platform") in (None, profile["platform"]):
+    if gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) and entry_class(hw) == memory_class(profile, gpu) and hw.get("platform") in (None, profile["platform"]):
       try:
         with open(os.path.join(catalog.root, hw["measured"]), "rb") as handle:
           return tomllib.load(handle)
@@ -1458,7 +1544,8 @@ def device_lines(runtime, gpu):
     elif device == "kfd":
       lines.append("AddDevice=/dev/kfd")
     elif device == "cdi-nvidia":
-      lines.append("AddDevice=nvidia.com/gpu=all")
+      # A discrete card gets only the one whose memory was checked; a unified GPU is the only one.
+      lines.append(f"AddDevice=nvidia.com/gpu={gpu['nvidia_index'] if gpu.get('nvidia_index') is not None else 'all'}")
     elif device == "infiniband":
       lines.append("AddDevice=/dev/infiniband")
   return lines
@@ -1830,6 +1917,11 @@ def free_memory(gpu):
   if gpu.get("sysfs"):
     used = int(_read(os.path.join(gpu["sysfs"], "mem_info_gtt_used"), "0") or 0) + int(_read(os.path.join(gpu["sysfs"], "mem_info_vram_used"), "0") or 0)
     gpu_free = gpu["memory_gib"] - gib(used)
+  elif gpu.get("nvidia_index") is not None:
+    # A reading that fails counts as no free memory, so admission waits and then refuses
+    # instead of approving a start on a card that may be full.
+    free = nvidia_free_gib(gpu["nvidia_index"])
+    gpu_free = free if free is not None else 0.0
   return available, gpu_free
 
 
@@ -2719,7 +2811,7 @@ def cmd_use(argv):
     gpu = recipe_gpu(profile, catalog.recipes[rid], args.gpu)
     for skipped_id, reason in skipped:
       say(f"Skipping {skipped_id}: {reason}")
-    say(f"Best for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")
+    say(f"Best for this machine ({gpu['family']}, {class_text(profile, gpu)}): {rid}")
   else:
     rid = args.target
     gpu = recipe_gpu(profile, _lookup_recipe(catalog, rid), args.gpu)
@@ -2911,9 +3003,11 @@ def cmd_list(argv):
   if args.json:
     print(json.dumps(rows, indent=2))
     return 0
-  gpu = profile["gpus"][0]["family"] if profile["gpus"] else "no GPU"
+  first = profile["gpus"][0] if profile["gpus"] else None
+  gpu = first["family"] if first else "no GPU"
+  memory = class_text(profile, first) if first else f"{profile['ram_class']} GB"
   paired = f" · linked to {profile['pair']['host']}" if profile.get("pair") else ""
-  say(f"This machine: {gpu}, {profile['ram_class']} GB, {profile['platform']}{paired}")
+  say(f"This machine: {gpu}, {memory}, {profile['platform']}{paired}")
   for row in rows:
     marks = [mark for mark, on in (("best", row["best"]), ("running", row["active"]), ("installed", row["installed"])) if on]
     tier = f" · third-party ({row['publisher']})" if row["tier"] == "third-party" else ""

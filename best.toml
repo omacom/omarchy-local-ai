@@ -23,3 +23,10 @@ recipes = ["nemotron-3.5-bolt-tensorfold", "qwen3.8-27b-tensorfold"]
 gpu = "nvidia-gb10-pair"
 ram_class = 128
 recipes = ["glm-5.3-flash-tensorfold-pair"]
+
+# An RTX 3090 is classed by its 24 GB of VRAM, not by the machine's RAM. The prompt cache is off: its staging
+# buffer doesn't fit beside the weights with a desktop on the card.
+[[class]]
+gpu = "nvidia-rtx3090"
+vram_class = 24
+recipes = ["nemotron-3.5-lightning-tensorfold", "lfm2.5-24b-a2b-tensorfold", "qwen3.5-2b-tensorfold"]

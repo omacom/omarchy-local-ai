@@ -1,0 +1,36 @@
+name = "LFM2.5 24B-A2B"
+summary = "24B mixture of experts, 2B active per token, at 4 bits. Small enough to leave a 24 GB card room for a desktop and a prompt cache."
+runtime = "tensorfold-x86"
+vendor = "liquid"
+architecture = "moe"
+
+[[hardware]]
+gpu = "nvidia-rtx3090"
+vram_class = 24
+measured = "measurements/lfm2.5-24b-a2b-tensorfold-rtx3090-24.toml"
+
+# LiquidAI's MLX affine 4-bit, group-64 export. The server loads the directory. Liquid AI's LFM Open License v1.0
+# allows commercial use only for an organization under US$10 million in annual revenue (the LICENSE file in the repo).
+[[artifacts]]
+repo = "LiquidAI/LFM2.5-24B-A2B-MLX-4bit"
+revision = "667408d494bde191c2cb9dd4f4549827816b9275"
+license = "other (LFM Open License v1.0: commercial use only under US$10 million in annual revenue, see the model card)"
+files = ["*.safetensors", "*.json", "chat_template.jinja"]
+dest = "target"
+model = "."
+
+# Measured on an RTX 3090 beside a desktop: 18.6 GiB of VRAM at peak (12.6 of weights, the rest two streams' caches,
+# which are allocated at load: four streams at this window need 10.45 GiB and don't fit). The 0.5 GiB prompt
+# cache sits in host memory, which peaked at 0.8 GiB with it empty, so 1.3 GiB with it full.
+[[variant]]
+ctx = 131072
+peak_ram_gib = 1.3
+peak_gpu_gib = 18.6
+args = ["--parallel", "2", "--prompt-cache-gib", "0.5"]
+
+[sampling]
+temperature = 0.1
+top_k = 50
+
+[server]
+args = ["--max-tokens", "16384"]
