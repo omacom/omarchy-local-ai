@@ -1,0 +1,36 @@
+recipe = "qwen3.8-27b-llamacpp-vulkan"
+measured_at = "2026-11-11"
+catalog_version = "0.5.0"
+image = "ghcr.io/joshuaswarren/llamacpp-vulkan@sha256:80a3fef4e1c0f56e472f4391b053a2965d36cd63eff8dd4659ba091f89cf9bbc"
+ctx = 8192
+load_seconds = 11.0
+method = "Median of 3 warm runs on the Vulkan driver the image ships. short is a 512-token prompt and long is an 8192-token prompt, both from bench/context.txt, temperature 1.0. The context is capped at 8192 because a 32768-token prompt faults the GPU, so the long prompt is 8192 tokens rather than the ~32K that tools/bench uses."
+
+[machine]
+platform = "aarch64-apple"
+gpu = "apple-silicon"
+ram_class = 96
+system = "Apple M2 Max"
+gpu_driver = "vulkan-asahi 26.2.2"
+
+[memory]
+observed_at_load_gib = 22.0
+total_gib = 94.3
+
+[short]
+prompt_tokens = 535
+completion_tokens = 73
+ttft_s = 10.65
+prefill_tok_s = 50.2
+decode_tok_s = 7.58
+
+[long]
+prompt_tokens = 8215
+completion_tokens = 58
+ttft_s = 155.58
+prefill_tok_s = 52.8
+decode_tok_s = 6.27
+
+[[artifacts]]
+repo = "unsloth/Qwen3.8-27B-GGUF"
+revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502"

@@ -1,0 +1,14 @@
+image = "ghcr.io/joshuaswarren/llamacpp-vulkan@sha256:80a3fef4e1c0f56e472f4391b053a2965d36cd63eff8dd4659ba091f89cf9bbc"
+publisher = "joshuaswarren"
+reviewer = "pending: Omacom maintainer"
+date = "2026-11-11"
+version = "llama.cpp cd959ba (v0.9.0)"
+source = "open (MIT), built at commit f05bad65 of https://github.com/joshuaswarren/omarchy-llamacpp-vulkan-image from llama.cpp cd959bae99ff4bed22bef2604f45241c09bbb8c8, with no patches. The base rootfs (ArchLinuxARM-aarch64-latest) is unpinned, so the digest cannot be rebuilt byte for byte."
+license_url = "https://raw.githubusercontent.com/ggml-org/llama.cpp/cd959bae99ff4bed22bef2604f45241c09bbb8c8/LICENSE"
+license_sha256 = "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+checked = [
+  "license: MIT for llama.cpp; the Vulkan driver and the Arch Linux ARM packages keep their own notices",
+  "build: GitHub Actions on an arm64 runner, image commit f05bad65, llama.cpp cd959bae99ff, no patches; the base rootfs is unpinned; the root filesystem holds only glibc, bash, curl and the Vulkan loader and driver",
+  "behavior: loads models from local paths; --hf-repo, --model-url and --hf-token are reserved so a recipe cannot make it fetch",
+  "auth: LLAMA_API_KEY covers every route except /health and the web UI; the runtime passes --no-webui, and /health returns no data",
+]

@@ -53,6 +53,10 @@ GFX_FAMILIES = {"gfx1151": "amd-strix-halo", "gfx1150": "amd-strix-point"}
 # laptop: it keeps its own family name so a measurement records which machine it came from,
 # but it runs what a GB10 with the same memory runs.
 NVIDIA_UNIFIED_FAMILIES = {"aarch64-gb10": "nvidia-gb10", "aarch64-n1x": "nvidia-n1x"}
+# Apple Silicon: the GPU shares the system's memory. The render node is the one owned by the GPU driver, named
+# `asahi` on most kernels and `aurora` on the Omarchy M kernel (the display engine's `apple` driver has none).
+APPLE_UNIFIED_FAMILIES = {"aarch64-apple": "apple-silicon"}
+APPLE_GPU_DRIVERS = ("asahi", "aurora")
 # Families that share recipes, qualification and recommendations: only memory sets them apart.
 GPU_CLASSES = {"nvidia-n1x": "nvidia-gb10"}
 
@@ -222,6 +226,17 @@ def amd_gpus(kfd_root="/sys/class/kfd/kfd/topology/nodes", drm_root="/sys/class/
   return gpus
 
 
+def apple_render_node(drm_root="/sys/class/drm"):
+  try:
+    names = sorted(os.listdir(drm_root))
+  except OSError:
+    return ""
+  for name in names:
+    if name.startswith("renderD") and os.path.basename(os.path.realpath(os.path.join(drm_root, name, "device", "driver"))) in APPLE_GPU_DRIVERS:
+      return f"/dev/dri/{name}"
+  return ""
+
+
 def ram_class(ram_gib):
   for size in RAM_CLASSES:
     if ram_gib <= size:
@@ -236,6 +251,10 @@ def machine_profile():
   ram = gib(mem.get("MemTotal", 0))
   platform = platform_name()
   gpus = amd_gpus()
+  if platform in APPLE_UNIFIED_FAMILIES:
+    render = apple_render_node()
+    if render:
+      gpus.append({"vendor": "apple", "family": APPLE_UNIFIED_FAMILIES[platform], "render_node": render, "vram_gib": 0, "gtt_gib": 0, "unified": True, "memory_gib": round(ram, 2), "sysfs": ""})
   if platform in NVIDIA_UNIFIED_FAMILIES:
     gpus.append({"vendor": "nvidia", "family": NVIDIA_UNIFIED_FAMILIES[platform], "render_node": "", "vram_gib": 0, "gtt_gib": 0, "unified": True, "memory_gib": round(ram, 2), "sysfs": ""})
   profile = {"platform": platform, "ram_gib": round(ram, 2), "ram_class": ram_class(ram), "gpus": gpus}
@@ -877,6 +896,8 @@ def runtime_supports(runtime, gpu):
     return "cdi-nvidia" not in devices
   if gpu["vendor"] == "nvidia":
     return "kfd" not in devices and "render" not in devices
+  if gpu["vendor"] == "apple":
+    return "render" in devices and "kfd" not in devices and "cdi-nvidia" not in devices
   return False
 
 
@@ -4571,8 +4592,10 @@ def max_output_tokens(manifest):
   try:
     tokens = int(value)
   except (TypeError, ValueError):
-    return DEFAULT_MAX_OUTPUT_TOKENS
-  return min(tokens, manifest["variant"]["ctx"]) if tokens > 0 else DEFAULT_MAX_OUTPUT_TOKENS
+    tokens = DEFAULT_MAX_OUTPUT_TOKENS
+  if tokens <= 0:
+    tokens = DEFAULT_MAX_OUTPUT_TOKENS
+  return min(tokens, manifest["variant"]["ctx"])
 
 
 def model_inputs(manifest):
