@@ -377,6 +377,19 @@ env_rt = copy.deepcopy(rt)
 env_rt["inputs"]["model"] = {"env": "MODEL_PATH"}
 env_text = a.render_container("model", changed, env_rt, variant, roles, gpu, "a" * 16)
 check("environment values are quoted and escaped", 'Environment="MODEL_PATH=/models/50%% $$HOME \\"quoted space\\" \\\\tail"' in env_text)
+smi = "NVIDIA GeForce RTX 3090, 24576, 8.6\nNVIDIA GeForce RTX 3090, 24576, 8.6\n"
+found = a.nvidia_gpus(smi)
+check("discrete NVIDIA GPUs are listed from nvidia-smi", [g["family"] for g in found] == ["nvidia-rtx3090"] * 2 and found[1]["nvidia_index"] == 1)
+check("a discrete GPU's memory is its VRAM, not unified", found[0]["memory_gib"] == 24 and found[0]["unified"] is False and found[0]["compute_cap"] == "8.6")
+check("nvidia-smi output that isn't a table lists nothing", a.nvidia_gpus("") == [] and a.nvidia_gpus("No devices were found\n") == [])
+check("a workstation card keeps its words in the family", a.nvidia_family("NVIDIA RTX PRO 6000 Blackwell Workstation Edition") == "nvidia-rtxpro6000blackwellworkstationedition")
+with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "nvidia_gpus", return_value=found[:1]), patch.object(a, "meminfo", return_value={"MemTotal": 78 * 2**30}):
+  prof = a.machine_profile()
+  check("an x86 machine with a 3090 profiles it beside its own RAM", prof["gpus"][0]["family"] == "nvidia-rtx3090" and prof["ram_class"] == 96)
+with patch.object(a, "platform_name", return_value="aarch64-gb10"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "nvidia_gpus", side_effect=AssertionError("a Spark's GPU is unified")), patch.object(a, "meminfo", return_value={"MemTotal": 120 * 2**30}):
+  check("a Spark isn't also listed as a discrete GPU", [g["family"] for g in a.machine_profile()["gpus"]] == ["nvidia-gb10"])
+with patch.object(a, "nvidia_free_gib", return_value=20.5), patch.object(a, "meminfo", return_value={"MemAvailable": 60 * 2**30}):
+  check("free memory on a discrete GPU is its VRAM free", a.free_memory(found[0]) == (60.0, 20.5))
 positional_rt = copy.deepcopy(runtime)
 positional_rt["command"] = ["server", "serve"]
 positional_rt["inputs"]["model"] = {"positional": True}

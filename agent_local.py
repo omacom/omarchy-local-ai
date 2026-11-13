@@ -376,6 +376,52 @@ def raise_gpu_memory(variant, gpu, detach=False):
     raise LocalError("Couldn't raise the GPU memory limit (see above)")
 
 
+def nvidia_family(name):
+  """`nvidia-rtx3090` from "NVIDIA GeForce RTX 3090"; a name without a model number keeps its words."""
+  words = re.sub(r"^NVIDIA\s+(GeForce\s+)?", "", name.strip(), flags=re.I)
+  return "nvidia-" + (re.sub(r"[^a-z0-9]+", "", words.lower()) or "gpu")
+
+
+def nvidia_gpus(smi_output=None):
+  """Discrete NVIDIA GPUs, one per `nvidia-smi` row of "name, memory.total MiB, compute_cap". Their
+  memory is their own VRAM, apart from the system's, unlike the GB10's."""
+  if smi_output is None:
+    try:
+      smi_output = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+      return []
+  gpus = []
+  for index, line in enumerate(smi_output.splitlines()):
+    name, _, rest = line.partition(",")
+    total, _, cap = rest.partition(",")
+    try:
+      mib = float(total)
+    except ValueError:
+      continue
+    gpus.append({
+      "vendor": "nvidia",
+      "family": nvidia_family(name),
+      "name": name.strip(),
+      "compute_cap": cap.strip(),
+      "nvidia_index": index,
+      "render_node": "",
+      "vram_gib": round(mib / 1024, 2),
+      "gtt_gib": 0,
+      "unified": False,
+      "memory_gib": round(mib / 1024, 2),
+      "sysfs": "",
+    })
+  return gpus
+
+
+def nvidia_free_gib(index):
+  try:
+    out = subprocess.run(["nvidia-smi", f"--id={index}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+    return float(out.strip()) / 1024
+  except (OSError, subprocess.SubprocessError, ValueError):
+    return None
+
+
 def ram_class(ram_gib):
   for size in RAM_CLASSES:
     if ram_gib <= size:
@@ -395,6 +441,8 @@ def machine_profile():
   gpus += intel_gpus(ram)
   if platform in NVIDIA_UNIFIED_FAMILIES:
     gpus.append({"vendor": "nvidia", "family": NVIDIA_UNIFIED_FAMILIES[platform], "render_node": "", "vram_gib": 0, "gtt_gib": 0, "unified": True, "memory_gib": round(ram, 2), "sysfs": ""})
+  else:
+    gpus.extend(nvidia_gpus())
   profile = {"platform": platform, "ram_gib": round(ram, 2), "ram_class": ram_class(ram), "gpus": gpus}
   pair = cached_pair(profile)
   if pair:
@@ -2240,6 +2288,10 @@ def free_memory(gpu):
     gpu_free = gpu["memory_gib"] - gib(used)
   elif gpu["vendor"] == "intel":
     gpu_free = gpu["memory_gib"] - gib(mem.get("GPUActive", 0))
+  elif gpu.get("nvidia_index") is not None:
+    free = nvidia_free_gib(gpu["nvidia_index"])
+    if free is not None:
+      gpu_free = free
   return available, gpu_free
 
 
