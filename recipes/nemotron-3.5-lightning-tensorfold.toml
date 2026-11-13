@@ -25,11 +25,12 @@ dest = "target"
 model = "."
 
 # The full window with a 4 GiB prompt cache, measured with the desktop's other VRAM users stopped (about 3 GiB):
-# 22.5 GiB at peak, and a 32K-token prompt resumes in 0.1 s instead of 3.4 s. With them running there is room for
-# only the variant below: start it with --ctx 65536 (a start with 22.5 GiB not free is refused).
+# 22.5 GiB at peak, and a 32K-token prompt resumes in 0.1 s instead of 3.4 s. Host memory peaked at 1.7 GiB with
+# the cache empty, so 5.7 with it full. With the other users running there is room for only the variant below:
+# start it with --ctx 65536 (a start with 22.5 GiB not free is refused).
 [[variant]]
 ctx = 262144
-peak_ram_gib = 1.7
+peak_ram_gib = 5.7
 peak_gpu_gib = 22.5
 args = ["--parallel", "1", "--prompt-cache-gib", "4"]
 
