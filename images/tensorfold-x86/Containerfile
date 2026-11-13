@@ -4,7 +4,10 @@
 # through CDI, so the image holds no CUDA toolkit or PyTorch. Text only: no cuBLASLt (--vision)
 # and no JPEG or WebP decoders yet.
 #
-#   podman build -t localhost/tensorfold-x86:1.2.7 images/tensorfold-x86
+#   podman build -t ghcr.io/bmaltais/tensorfold-x86:1.2.7 images/tensorfold-x86
+#
+# Published as ghcr.io/bmaltais/tensorfold-x86; the runtime pins the digest of that push, which differs from
+# the one a local build gets (the registry stores its own manifest).
 #
 # release.pem is the release key (ed25519PublicKey in TensorFold's packaging/runtime-trust.json).
 # The build stops unless the archive's checksum, the signature over it and every unpacked file's checksum match.

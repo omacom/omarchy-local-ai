@@ -1,5 +1,5 @@
-image = "localhost/tensorfold-x86@sha256:004b8ff96bf48de0529549a8c5763a7f528923a4cc9d860dc1a5359fc8882002"
-publisher = "Local build from images/tensorfold-x86/Containerfile in this repo, of TensorFold's signed upstream release with no patches"
+image = "ghcr.io/bmaltais/tensorfold-x86@sha256:bc27ae10fd58e139dc1529eddc8c0af8961cdbd6e664f86485e5f5ccdc9aaf96"
+publisher = "bmaltais (built from images/tensorfold-x86/Containerfile in this repo, TensorFold's signed upstream release with no patches)"
 reviewer = "Claude Code for Bernard Maltais"
 date = "2026-11-13"
 version = "TensorFold 1.2.7, linux-x86_64 release archive"
