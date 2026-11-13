@@ -1,0 +1,36 @@
+# TensorFold's native server from its signed upstream x86_64 release, with no patches, on
+# debian:trixie-slim: the same layout as the aarch64 image the DGX recipes pin. The CUDA kernels
+# (sm_80, sm_86, sm_120, sm_121) are embedded in the executable and the driver's libcuda arrives
+# through CDI, so the image holds no CUDA toolkit or PyTorch. Text only: no cuBLASLt (--vision)
+# and no JPEG or WebP decoders yet.
+#
+#   podman build -t localhost/tensorfold-x86:1.2.7 images/tensorfold-x86
+#
+# release.pem is the release key (ed25519PublicKey in TensorFold's packaging/runtime-trust.json).
+# The build stops unless the archive's checksum, the signature over it and every unpacked file's checksum match.
+FROM docker.io/library/debian:trixie-slim AS fetch
+ARG TENSORFOLD_VERSION=1.2.7
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl openssl \
+    && rm -rf /var/lib/apt/lists/*
+COPY release.pem /fetch/release.pem
+WORKDIR /fetch
+RUN set -eu; \
+    a="tensorfold-$TENSORFOLD_VERSION-linux-x86_64.tar.gz"; \
+    u="https://github.com/ashhart/TensorFold/releases/download/v$TENSORFOLD_VERSION"; \
+    curl -fsSLO "$u/$a" -fsSLO "$u/$a.sha256" -fsSLO "$u/$a.sha256.sig"; \
+    sha256sum -c "$a.sha256"; \
+    { printf 'tensorfold-native-checksum-v1\n'; cat "$a.sha256"; } > signed; \
+    openssl pkeyutl -verify -pubin -inkey release.pem -rawin -in signed -sigfile "$a.sha256.sig"; \
+    mkdir /opt/tensorfold; \
+    tar -xzf "$a" -C /opt/tensorfold --strip-components=1; \
+    cd /opt/tensorfold && sha256sum --quiet -c SHA256SUMS
+
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=fetch /opt/tensorfold /opt/tensorfold
+ENV PATH=/opt/tensorfold/bin:$PATH \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    TENSORFOLD_NO_UPDATE_CHECK=1
+EXPOSE 8888
+CMD ["tensorfold-native", "--version"]
