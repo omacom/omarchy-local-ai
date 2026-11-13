@@ -24,9 +24,22 @@ files = ["*.safetensors", "*.json", "chat_template.jinja"]
 dest = "target"
 model = "."
 
-# Measured on an RTX 3090 with a desktop on the card (3.7 of its 24 GiB): 19.8 GiB at peak. One stream and
-# no prompt cache: a cache of 1 GiB or more fails to start (its staging buffer doesn't fit beside the
-# weights), and 131072 tokens ran out of memory. Context costs little here: 16K to 64K differ by 0.4 GiB.
+# The full window with a 4 GiB prompt cache, measured with the desktop's other VRAM users stopped (Superwhisper's
+# ~2.9 GiB): 22.5 GiB at peak, and a 32K-token prompt resumes in 0.1 s instead of 3.4 s. With them running there is
+# room for only the variant below: start it with --ctx 65536 (a start with 22.5 GiB not free is refused).
+[[variant]]
+ctx = 262144
+source = "measured"
+peak_ram_gib = 1.7
+peak_gpu_gib = 22.5
+args = ["--parallel", "1", "--prompt-cache-gib", "4"]
+measured_at = "2026-11-13"
+decode_tok_s = 706.3
+prefill_tok_s = 8094.8
+
+# Measured with a desktop on the card (3.7 of its 24 GiB): 19.8 GiB at peak. One stream and no prompt cache:
+# a cache of 1 GiB or more fails to start there (its staging buffer doesn't fit beside the weights), and
+# 131072 tokens ran out of memory. Context costs little here: 16K to 64K differ by 0.4 GiB.
 [[variant]]
 ctx = 65536
 source = "measured"
