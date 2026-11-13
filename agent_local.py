@@ -22,6 +22,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -3528,8 +3529,17 @@ def cmd_validate(argv):
 # peers are online and fetching each one's models.json. Hosts it has seen stay
 # in network.json while they're away, marked offline, so a model that drops
 # off the tailnet keeps its line in the panel instead of vanishing.
+#
+# Circle is a mesh like Tailscale with no `serve`, so on a circle the share
+# proxy answers itself: it listens on this machine's Circle addresses at
+# CIRCLE_PORT with the same /local-ai routes, over plain HTTP inside Circle's
+# encrypted tunnel, and the model's key still guards every request. A machine
+# can be on both; a host reachable on both is reached over Tailscale.
 
 SHARE_ROOT = "/local-ai"
+CIRCLE_DOMAIN = "circle.internal"
+CIRCLE_PORT = 11431
+NO_MESH_HINT = "This machine isn't on a tailnet or a circle. Run: tailscale up, or: circle login"
 LISTING_ROUTE = SHARE_ROOT + "/models.json"
 NETWORK_SCHEMA = 1
 # How long an unpaired host that stopped answering stays listed as offline.
@@ -3607,11 +3617,61 @@ def node_dns(node):
   return dns if DNS_RE.match(dns) else ""
 
 
-def self_dns(status=None):
-  dns = node_dns((status or tailscale_status() or {}).get("Self"))
-  if not dns:
-    raise LocalError("This machine isn't on a tailnet with MagicDNS. Run: tailscale up")
-  return dns
+def circle_status():
+  """circled's own view of the circle, or None without one."""
+  if not shutil.which("circle"):
+    return None
+  try:
+    result = subprocess.run(["circle", "status", "--json"], capture_output=True, text=True, timeout=5)
+  except (subprocess.TimeoutExpired, OSError):
+    return None
+  if result.returncode != 0:
+    return None
+  try:
+    status = json.loads(result.stdout)
+  except ValueError:
+    return None
+  return status if isinstance(status, dict) and status.get("phase") == "running" else None
+
+
+def circle_dns(node):
+  """A circle member's name in Circle's own DNS, as tailnet names are in MagicDNS."""
+  dns = f"{str((node or {}).get('name') or '').lower()}.{CIRCLE_DOMAIN}"
+  return dns if DNS_RE.match(dns) else ""
+
+
+def circle_self(status=None):
+  """This machine on the circle: (dns, addresses), or None off it."""
+  me = ((status or circle_status()) or {}).get("self") or {}
+  addresses = []
+  for address in me.get("addresses") or []:
+    try:
+      addresses.append(str(ipaddress.ip_address(address)))
+    except ValueError:
+      continue
+  dns = circle_dns(me)
+  return (dns, addresses) if dns and addresses else None
+
+
+def on_circle(dns):
+  return str(dns or "").endswith("." + CIRCLE_DOMAIN)
+
+
+def share_base(dns):
+  """Where a host's shares are: behind Tailscale Serve's HTTPS, or the share proxy's Circle port."""
+  return f"http://{dns}:{CIRCLE_PORT}{SHARE_ROOT}" if on_circle(dns) else f"https://{dns}{SHARE_ROOT}"
+
+
+def share_bases():
+  """Where this machine's shares are, on every mesh it's on."""
+  bases = []
+  dns = node_dns((tailscale_status() or {}).get("Self"))
+  if dns:
+    bases.append(share_base(dns))
+  circle = circle_self()
+  if circle:
+    bases.append(share_base(circle[0]))
+  return bases
 
 
 def serve_handlers(dns):
@@ -3685,34 +3745,45 @@ def shared_listing(record, catalog, profile, dns):
   }
 
 
+def serve_shares(dns, rids, text):
+  """Bring Tailscale Serve's routes in line with the shared models and their listing."""
+  have = serve_handlers(dns)
+  want = {f"{SHARE_ROOT}/{rid}": f"http://127.0.0.1:{SHARE_PROXY_PORT}/{rid}" for rid in rids}
+  for path, target in want.items():
+    if (have.get(path) or {}).get("Proxy") != target:
+      serve_set(path, target)
+  for path in have:
+    if path != LISTING_ROUTE and path not in want:
+      serve_off(path)
+  if text and (have.get(LISTING_ROUTE) or {}).get("Text") != text:
+    serve_set(LISTING_ROUTE, "text:" + text)
+  elif not text and LISTING_ROUTE in have:
+    serve_off(LISTING_ROUTE)
+
+
 def publish_shares(record, catalog, profile, force=False):
-  """Bring the serve routes in line with shares.json and republish the
-  listing when it changed. Errors land in share_error for the panel."""
+  """Bring what this machine shares in line with shares.json: the share proxy,
+  which answers on the circle itself, the listing it serves there, and
+  Tailscale Serve's routes on a tailnet. Errors land in share_error for the panel."""
   with share_lock():
     shares = shared_recipes()
     published = _read(published_path())
     if not shares and not published and not force:
       return
     try:
-      dns = self_dns()
-      have = serve_handlers(dns)
-      want = {f"{SHARE_ROOT}/{rid}": f"http://127.0.0.1:{SHARE_PROXY_PORT}/{rid}" for rid in shares if rid in record["models"]}
-      if want:
-        ensure_share_proxy()
-      for path, target in want.items():
-        if (have.get(path) or {}).get("Proxy") != target:
-          serve_set(path, target)
-      for path in have:
-        if path != LISTING_ROUTE and path not in want:
-          serve_off(path)
-      if want:
-        text = json.dumps(shared_listing(record, catalog, profile, dns), sort_keys=True, separators=(",", ":"))
-        if (have.get(LISTING_ROUTE) or {}).get("Text") != text:
-          serve_set(LISTING_ROUTE, "text:" + text)
+      dns = node_dns((tailscale_status() or {}).get("Self"))
+      circle = circle_self()
+      rids = [rid for rid in shares if rid in record["models"]]
+      if rids and not dns and not circle:
+        raise LocalError(NO_MESH_HINT)
+      text = None
+      if rids:
+        ensure_share_proxy(circle[1] if circle else [])
+        text = json.dumps(shared_listing(record, catalog, profile, dns or circle[0]), sort_keys=True, separators=(",", ":"))
         write_atomic(published_path(), text + "\n")
-      else:
-        if LISTING_ROUTE in have:
-          serve_off(LISTING_ROUTE)
+      if dns:
+        serve_shares(dns, rids, text)
+      if not rids:
         if os.path.exists(published_path()):
           os.unlink(published_path())
         stop_share_proxy()
@@ -3725,7 +3796,7 @@ def publish_shares(record, catalog, profile, force=False):
 
 
 def cmd_share(argv):
-  parser = argparse.ArgumentParser(prog="omarchy agent local share", description="Share a model with the other machines on your tailnet")
+  parser = argparse.ArgumentParser(prog="omarchy agent local share", description="Share a model with the other machines on your tailnet or circle")
   parser.add_argument("recipe", nargs="?")
   parser.add_argument("--off", action="store_true", help="stop sharing it")
   parser.add_argument("--export", action="store_true", help=argparse.SUPPRESS)
@@ -3733,9 +3804,15 @@ def cmd_share(argv):
   if args.export:
     # Read by `pair` on the other end of an SSH connection: the only way the
     # key leaves this machine.
-    status = tailscale_status()
-    dns = self_dns(status)
-    print(json.dumps({"schema": NETWORK_SCHEMA, "host": dns.split(".")[0], "dns": dns, "key": ensure_key(), "shared": shared_recipes()}))
+    # The pairing machine reaches this one on whichever mesh they share, so
+    # both names go: its tailnet name as `dns`, as before, and its circle one.
+    dns = node_dns((tailscale_status() or {}).get("Self"))
+    circle = circle_self()
+    if not dns and not circle:
+      raise LocalError(NO_MESH_HINT)
+    circle_name = circle[0] if circle else ""
+    dns = dns or circle_name
+    print(json.dumps({"schema": NETWORK_SCHEMA, "host": dns.split(".")[0], "dns": dns, "circle_dns": circle_name, "key": ensure_key(), "shared": shared_recipes()}))
     return 0
   catalog = load_catalog()
   profile = machine_profile()
@@ -3744,7 +3821,7 @@ def cmd_share(argv):
     if not shares:
       say("Nothing is shared. Share a model with: omarchy agent local share <recipe>")
     for rid in shares:
-      say(f"{rid}: https://{self_dns()}{SHARE_ROOT}/{rid}/v1")
+      say(f"{rid}: " + " and ".join(f"{base}/{rid}/v1" for base in share_bases()))
     return 0
   rid = args.recipe
   if not ID_RE.match(rid):
@@ -3752,7 +3829,8 @@ def cmd_share(argv):
   if not args.off:
     if not load_model(rid):
       raise LocalError(f"{rid} isn't set up. Run: omarchy agent local use {rid}")
-    self_dns()
+    if not share_bases():
+      raise LocalError(NO_MESH_HINT)
   with share_lock():
     shares = set(shared_recipes())
     if args.off:
@@ -3768,7 +3846,7 @@ def cmd_share(argv):
   if args.off:
     say(f"{rid} is no longer shared")
   else:
-    say(f"Sharing {rid} on your tailnet at https://{self_dns()}{SHARE_ROOT}/{rid}/v1")
+    say(f"Sharing {rid} at " + " and ".join(f"{base}/{rid}/v1" for base in share_bases()))
   return 0
 
 
@@ -3796,14 +3874,15 @@ def share_proxy_unit_path():
   return os.path.join(home(), ".config", "systemd", "user", SHARE_PROXY_UNIT)
 
 
-def ensure_share_proxy():
-  """The proxy runs while anything is shared: written, reloaded and started on first need."""
+def ensure_share_proxy(listen=()):
+  """The proxy runs while anything is shared: written, reloaded and started on
+  first need, and restarted when the circle addresses it listens on change."""
   text = "\n".join([
     "[Unit]",
     "Description=Omarchy local AI: count who uses the shared models",
     "",
     "[Service]",
-    "ExecStart=/usr/bin/env omarchy-agent-local share-proxy",
+    "ExecStart=/usr/bin/env omarchy-agent-local share-proxy" + "".join(f" --listen {address}" for address in listen),
     "Restart=on-failure",
     "",
   ])
@@ -3811,6 +3890,7 @@ def ensure_share_proxy():
   if _read(path) != text.strip():
     write_atomic(path, text)
     systemctl("daemon-reload")
+    systemctl("try-restart", SHARE_PROXY_UNIT)
   result = systemctl("start", SHARE_PROXY_UNIT)
   if result.returncode != 0:
     raise LocalError(f"Can't start the share proxy: {result.stderr.strip()}")
@@ -3878,7 +3958,11 @@ def proxy_client(headers, address):
     return address
 
 
-def make_share_proxy(tracker, ports=None, shares=None):
+def make_share_proxy(tracker, ports=None, shares=None, mesh=False):
+  """The proxy's handler. Behind Tailscale Serve it answers /<recipe> and
+  learns the caller from X-Forwarded-For; facing the circle (`mesh`) it answers
+  the routes Serve would, /local-ai/<recipe> and the listing, and the caller
+  is whoever connected, since anyone there could send that header."""
   import http.client
   import http.server
   ports = ports or load_ports
@@ -3932,8 +4016,26 @@ def make_share_proxy(tracker, ports=None, shares=None):
       self.send_header("Connection", "close")
       self.end_headers()
 
+    def _listing(self):
+      body = _read(published_path()).encode()
+      if not body:
+        return self._refuse(404)
+      self.send_response(200)
+      self.send_header("Content-Type", "application/json")
+      self.send_header("Content-Length", str(len(body)))
+      self.end_headers()
+      if self.command != "HEAD":
+        self.wfile.write(body)
+
     def _forward(self):
-      rid, _, rest = self.path.lstrip("/").partition("/")
+      path = self.path
+      if mesh:
+        if path.split("?")[0] == LISTING_ROUTE and self.command in ("GET", "HEAD"):
+          return self._listing()
+        if not path.startswith(SHARE_ROOT + "/"):
+          return self._refuse(404)
+        path = path[len(SHARE_ROOT):]
+      rid, _, rest = path.lstrip("/").partition("/")
       port = ports().get(rid)
       if not ID_RE.match(rid) or rid not in shares() or not port:
         return self._refuse(404)
@@ -3948,7 +4050,7 @@ def make_share_proxy(tracker, ports=None, shares=None):
         return self._refuse(502)
       # Only a request the model accepted counts: a wrong key or a bad path doesn't.
       if answer.status < 400:
-        tracker.saw(rid, proxy_client(self.headers, self.client_address[0]))
+        tracker.saw(rid, self.client_address[0] if mesh else proxy_client(self.headers, self.client_address[0]))
       try:
         self.send_response(answer.status, answer.reason)
         for name, value in answer.getheaders():
@@ -3980,14 +4082,49 @@ def make_share_proxy(tracker, ports=None, shares=None):
   return Handler
 
 
+# Linux's IP_FREEBIND and IPV6_FREEBIND, which Python names on only some versions.
+IP_FREEBIND = getattr(socket, "IP_FREEBIND", 15)
+IPV6_FREEBIND = getattr(socket, "IPV6_FREEBIND", 78)
+
+
+def circle_server(address, handler, port=CIRCLE_PORT):
+  """A listener on one of this machine's circle addresses. It binds even while
+  Circle is down and its address gone, and answers once Circle is back."""
+  import http.server
+  family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
+
+  class Server(http.server.ThreadingHTTPServer):
+    address_family = family
+    daemon_threads = True
+
+    def server_bind(self):
+      if family == socket.AF_INET6:
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        self.socket.setsockopt(socket.IPPROTO_IPV6, IPV6_FREEBIND, 1)
+      else:
+        self.socket.setsockopt(socket.IPPROTO_IP, IP_FREEBIND, 1)
+      # HTTPServer's own bind looks up the address's name, which can stall
+      # on a resolver Circle runs while Circle is down.
+      self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      self.socket.bind(self.server_address)
+      self.server_address = self.socket.getsockname()
+      self.server_name, self.server_port = address, self.server_address[1]
+
+  return Server((address, port), handler)
+
+
 def cmd_share_proxy(argv):
   import http.server
-  argparse.ArgumentParser(prog="omarchy agent local share-proxy").parse_args(argv)
+  parser = argparse.ArgumentParser(prog="omarchy agent local share-proxy")
+  parser.add_argument("--listen", action="append", default=[], type=lambda value: str(ipaddress.ip_address(value)), help="a circle address to answer on")
+  args = parser.parse_args(argv)
   tracker = ClientTracker(clients_path())
   tracker.expire()
   server = http.server.ThreadingHTTPServer(("127.0.0.1", SHARE_PROXY_PORT), make_share_proxy(tracker))
   server.daemon_threads = True
   threading.Thread(target=tracker.run_expiry, daemon=True).start()
+  for address in args.listen:
+    threading.Thread(target=circle_server(address, make_share_proxy(tracker, mesh=True)).serve_forever, daemon=True).start()
 
   def stop(*_):
     raise SystemExit(0)
@@ -4139,11 +4276,14 @@ def fetch_listing(dns):
   malformed response, nesting deep enough to recurse out) leaves that one peer
   unreachable, never the whole survey."""
   try:
-    status, body = http_status(f"https://{dns}{LISTING_ROUTE}", timeout=LISTING_TIMEOUT)
-    # Tailscale stops listening on 443 once a host's last serve route goes, so
-    # an online host refusing the connection simply shares nothing.
+    status, body = http_status(f"{share_base(dns)}/models.json", timeout=LISTING_TIMEOUT)
+    # Tailscale stops listening on 443 once a host's last serve route goes,
+    # and the share proxy stops once nothing is shared, so an online host
+    # refusing the connection simply shares nothing.
     if status == 404 or (status == 0 and b"Connection refused" in body):
       return "not_sharing", None, ""
+    if status == 0 and on_circle(dns) and b"timed out" in body:
+      return "unreachable", None, f"No answer on port {CIRCLE_PORT}: does its firewall let the circle in?"
     if status != 200:
       return "unreachable", None, f"HTTP {status}" if status else body.decode(errors="replace")[:200]
     return "online", clean_listing(json.loads(body), dns), ""
@@ -4159,7 +4299,7 @@ def remote_record(host, dns, model, paired, ram_total_gib, last_seen_ms):
     "host": host,
     "dns": dns,
     "paired": paired,
-    "endpoint": f"https://{dns}{SHARE_ROOT}/{rid}/v1",
+    "endpoint": f"{share_base(dns)}/{rid}/v1",
     "ram_total_gib": ram_total_gib,
     "last_seen_ms": last_seen_ms,
     # Set while the host can't be reached: why, for the line that says so.
@@ -4168,10 +4308,11 @@ def remote_record(host, dns, model, paired, ram_total_gib, last_seen_ms):
 
 
 def survey_network(previous, now=None):
-  """Every model shared on the tailnet, plus the ones seen before whose host
-  is away now. `previous` is the last network.json."""
+  """Every model shared on the tailnet and the circle, plus the ones seen
+  before whose host is away now. `previous` is the last network.json."""
   now = now or int(time.time() * 1000)
   status = tailscale_status()
+  circle = circle_status()
   remotes = load_remotes()
   hosts, models = {}, {}
   me = node_dns((status or {}).get("Self"))
@@ -4180,6 +4321,14 @@ def survey_network(previous, now=None):
     dns = node_dns(node)
     if dns and dns != me and node.get("OS") == "linux":
       peers[dns.split(".")[0]] = (dns, node.get("Online") is True)
+  # A circle lists no OS, so every member is asked. A host on both meshes is
+  # reached over Tailscale, unless only the circle has it online.
+  circle_me = circle_dns((circle or {}).get("self"))
+  for node in (circle or {}).get("peers") or []:
+    dns = circle_dns(node) if isinstance(node, dict) else ""
+    host = dns.split(".")[0]
+    if dns and dns != circle_me and host != me.split(".")[0] and (host not in peers or (node.get("online") is True and not peers[host][1])):
+      peers[host] = (dns, node.get("online") is True)
   for host, remote in remotes.items():
     peers.setdefault(host, (remote["dns"], False))
   for host, before in (previous.get("hosts") or {}).items():
@@ -4217,16 +4366,17 @@ def survey_network(previous, now=None):
       if isinstance(model, dict) and model.get("host") == host and isinstance(model.get("recipe"), str) and ID_RE.match(model["recipe"]):
         models[mid] = {**model, "paired": connected(remotes.get(host), model["recipe"]), "offline": reason, "unit": "inactive", "since_ms": None}
   return {
-    "schema": NETWORK_SCHEMA, "updated_ms": now, "tailnet": status is not None,
+    "schema": NETWORK_SCHEMA, "updated_ms": now, "tailnet": status is not None, "circle": circle is not None,
     # Whether `share` can work here: tailscale serve needs MagicDNS and HTTPS
-    # certificates. The panel only offers sharing when it can.
-    "can_share": bool(me) and bool((status or {}).get("CertDomains")),
+    # certificates, and a circle only this machine's address on it. The panel
+    # only offers sharing when it can.
+    "can_share": (bool(me) and bool((status or {}).get("CertDomains"))) or circle_self(circle) is not None,
     "self": me.split(".")[0] if me else "", "hosts": hosts, "models": models,
   }
 
 
 def write_network(forget=None):
-  """Survey the tailnet and rewrite network.json, which the panel watches."""
+  """Survey the tailnet and the circle and rewrite network.json, which the panel watches."""
   ensure_dir(state_dir())
   with open(os.path.join(state_dir(), "network.lock"), "w") as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
@@ -4258,14 +4408,22 @@ def resolve_remote(mid, running_only=True):
   remote = load_remotes().get(host)
   if not connected(remote, rid):
     raise LocalError(f"{host}/{rid} isn't paired. Run: omarchy agent local pair {host} {rid}")
-  state, listing, error = fetch_listing(remote["dns"])
+  # The survey may have found the host on the other mesh since it was paired.
+  names = [remote["dns"]]
+  found = (load_network()["hosts"].get(host) or {}).get("dns")
+  if isinstance(found, str) and DNS_RE.match(found) and found != remote["dns"]:
+    names.append(found)
+  for dns in names:
+    state, listing, error = fetch_listing(dns)
+    if state == "online":
+      break
   if state != "online":
     raise LocalError(f"{host} doesn't share models right now" if state == "not_sharing" else f"{host} isn't reachable{': ' + error if error else ''}")
   for model in listing["models"]:
     if model["recipe"] == rid:
       if running_only and model["unit"] != "active":
         raise LocalError(f"{rid} isn't running on {host}")
-      return remote_record(host, remote["dns"], model, True, listing["ram_total_gib"], int(time.time() * 1000))
+      return remote_record(host, dns, model, True, listing["ram_total_gib"], int(time.time() * 1000))
   raise LocalError(f"{host} doesn't share {rid}")
 
 
@@ -4290,9 +4448,24 @@ def ssh_command(remote, *argv, interactive=False):
   return ["ssh", *options, "--", target, shlex.join(["omarchy-agent-local", *argv])]
 
 
+def pairing_name(names):
+  """The name a host is paired by, from those it sent: its tailnet one when
+  this machine is on a tailnet, else its circle one when this machine is on a
+  circle. A host from before circles sends only its tailnet name."""
+  if not names:
+    return ""
+  tailnet = [dns for dns in names if not on_circle(dns)]
+  circle = [dns for dns in names if on_circle(dns)]
+  if tailnet and tailscale_status() is not None:
+    return tailnet[0]
+  if circle and circle_status() is not None:
+    return circle[0]
+  return names[0]
+
+
 def cmd_pair(argv):
-  parser = argparse.ArgumentParser(prog="omarchy agent local pair", description="Use the models another machine on your tailnet shares")
-  parser.add_argument("host", help="its tailnet name, or an SSH host that reaches it")
+  parser = argparse.ArgumentParser(prog="omarchy agent local pair", description="Use the models another machine on your tailnet or circle shares")
+  parser.add_argument("host", help="its tailnet or circle name, or an SSH host that reaches it")
   parser.add_argument("recipe", nargs="?", help="connect just this model; without one, every model it shares")
   args = parser.parse_args(argv)
   target = args.host
@@ -4333,10 +4506,13 @@ def cmd_pair(argv):
     raise LocalError(f"Can't run omarchy-agent-local on {name}")
   try:
     export = json.loads(result.stdout.strip().splitlines()[-1])
-    host, dns, key = export["host"], export["dns"], export["key"]
+    names, key = [export["dns"], export.get("circle_dns") or ""], export["key"]
   except (ValueError, KeyError, IndexError, TypeError):
     raise LocalError(f"{name} didn't send its sharing details")
-  if not HOST_RE.match(str(host)) or not DNS_RE.match(str(dns)) or not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", key):
+  names = [str(dns) for dns in names if DNS_RE.match(str(dns))]
+  dns = pairing_name(names)
+  host = dns.split(".")[0]
+  if not HOST_RE.match(host) or not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", key):
     raise LocalError(f"{name} sent an invalid host name or key")
   with remotes_lock():
     write_atomic(remote_key_path(host), key, mode=0o600)
@@ -4388,7 +4564,7 @@ def cmd_forget(argv):
 
 
 def cmd_network(argv):
-  parser = argparse.ArgumentParser(prog="omarchy agent local network", description="List the models shared on your tailnet")
+  parser = argparse.ArgumentParser(prog="omarchy agent local network", description="List the models shared on your tailnet or circle")
   parser.add_argument("--json", action="store_true")
   parser.add_argument("--write", action="store_true", help=argparse.SUPPRESS)
   args = parser.parse_args(argv)
@@ -4398,11 +4574,11 @@ def cmd_network(argv):
   if args.json:
     print(json.dumps(network, indent=2))
     return 0
-  if not network["tailnet"]:
-    say("This machine isn't on a tailnet. Run: tailscale up")
+  if not network["tailnet"] and not network["circle"]:
+    say(NO_MESH_HINT)
     return 0
   if not network["models"]:
-    say("No machine on your tailnet shares a model. On one that runs a model: omarchy agent local share <recipe>")
+    say("No machine on your tailnet or circle shares a model. On one that runs a model: omarchy agent local share <recipe>")
   for mid, model in sorted(network["models"].items()):
     state = model["offline"] or {"active": "running", "activating": "loading", "deactivating": "stopping"}.get(model["unit"], model["unit"])
     pairing = "" if model["paired"] else f" · pair with: omarchy agent local pair {model['host']} {model['recipe']}"
@@ -4695,8 +4871,8 @@ SUMMARIES = {
   "start": "Start a model that's set up, the last one started by default",
   "stop": "Stop a model, or every running one",
   "remove": "Remove a model's weights, manifests and unused image",
-  "share": "Share a model with the other machines on your tailnet, or stop with --off",
-  "network": "List the models shared on your tailnet, including hosts that are offline",
+  "share": "Share a model with the other machines on your tailnet or circle, or stop with --off",
+  "network": "List the models shared on your tailnet or circle, including hosts that are offline",
   "pair": "Pair with a machine over SSH to use the models it shares",
   "forget": "Unpair a machine and drop its models",
   "logs": "Show a model's logs, and its other half's on a paired Spark",
