@@ -26,6 +26,8 @@ sys.path.insert(0, os.environ["ENGINE_ROOT"])
 import agent_local as a
 import runpy
 bench = SimpleNamespace(**runpy.run_path(str(Path(os.environ["ENGINE_ROOT"]) / "tools/bench")))
+# The machine running the tests may be on a circle; only the tests that say so are.
+a.circle_status = lambda: None
 
 
 def check(name, condition, detail=""):
@@ -910,6 +912,21 @@ check("the survey skips this machine, phones and peers sharing nothing", set(net
 check("sharing needs HTTPS certificates on the tailnet", net["can_share"] is False)
 with patch.object(a, "tailscale_status", return_value={**ts_status, "CertDomains": ["me.tail.ts.net"]}), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
   check("a tailnet with MagicDNS and HTTPS can share", a.survey_network(previous, now=now)["can_share"] is True)
+# A circle is surveyed beside the tailnet: its hosts at Circle's port, a host
+# on both reached over Tailscale.
+circle = {"phase": "running", "self": {"name": "me", "addresses": ["10.37.0.3"]}, "peers": [
+  {"name": "spark", "addresses": ["10.37.0.1"], "online": True},
+  {"name": "box", "addresses": ["10.37.0.4"], "online": True},
+]}
+answers["spark.circle.internal"] = ("online", clean, "")
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "circle_status", return_value=circle), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+  both = a.survey_network(previous, now=now)
+check("a circle's sharing host is listed at Circle's port", both["models"]["spark/big-model"]["endpoint"] == f"http://spark.circle.internal:{a.CIRCLE_PORT}/local-ai/big-model/v1" and both["circle"])
+check("a host on the tailnet and the circle is reached over Tailscale", both["hosts"]["box"]["dns"] == "box.tail.ts.net")
+check("a circle can share without Tailscale's certificates", both["can_share"] is True)
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "circle_status", return_value=circle):
+  check("a host is paired by its tailnet name on a tailnet, by its circle name off one",
+        a.pairing_name(["spark.circle.internal"]) == "spark.circle.internal" and a.pairing_name(["box.tail.ts.net", "box.circle.internal"]) == "box.circle.internal")
 check("a host that went offline keeps its models, marked offline", net["models"]["away/small-model"]["offline"] == "offline" and net["models"]["away/small-model"]["unit"] == "inactive" and net["hosts"]["away"]["state"] == "offline")
 check("an online host that stopped answering is marked unreachable", net["models"]["flaky/mid-model"]["offline"] == "unreachable" and net["hosts"]["flaky"]["error"] == "HTTP 502")
 check("offline hosts keep their last-seen time", net["hosts"]["away"]["last_seen_ms"] == 1_000_000 and net["hosts"]["box"]["last_seen_ms"] == now)
@@ -1085,6 +1102,17 @@ with patch.object(a, "known_models", return_value=["current"]), patch.object(a, 
   record = a.write_status(cat, profile)
   check("a refused share is reported with the fix", record["share_error"] == a.OPERATOR_HINT)
 a.save_shares([])
+# On a circle alone, the share proxy answers itself on this machine's circle addresses.
+with patch.object(a, "known_models", return_value=["current"]), patch.object(a, "unit_props", return_value={"ActiveState": "active"}), patch.object(a, "free_memory", return_value=(64, 48)), \
+     patch.object(a, "tailscale", side_effect=AssertionError("no Tailscale")), patch.object(a, "tailscale_status", return_value=None), \
+     patch.object(a, "circle_status", return_value={"phase": "running", "self": {"name": "me", "addresses": ["10.37.0.3", "fd7a::3"]}}), \
+     patch.object(a, "systemctl", return_value=SimpleNamespace(returncode=0, stderr="")):
+  a.save_shares(["current"])
+  record = a.write_status(cat, profile)
+  check("on a circle the share proxy listens on its addresses and publishes the listing",
+        "--listen 10.37.0.3 --listen fd7a::3" in open(a.share_proxy_unit_path()).read() and json.loads(open(a.published_path()).read())["models"][0]["recipe"] == "current" and record["share_error"] == "")
+  a.save_shares([])
+  a.write_status(cat, profile)
 
 # The share proxy: a request the model accepts counts its machine for the
 # window, a refused one doesn't, and a streamed answer arrives as it's sent.
@@ -1174,6 +1202,23 @@ now[0] += 500
 check("a machine idle past the window stops counting", tracker.expire() is not None and counts() == {"shared": 1})
 now[0] += 600
 check("once everyone is idle nothing counts and nothing is pending", tracker.expire() is None and counts() == {})
+# Facing the circle, the proxy answers the routes Tailscale Serve would, and
+# the caller is whoever connected, whatever header it sends.
+facing = a.circle_server("127.0.0.1", a.make_share_proxy(tracker, ports=lambda: {"shared": model.server_address[1]}, shares=lambda: ["shared"], mesh=True), port=0)
+threading.Thread(target=facing.serve_forever, daemon=True).start()
+def ask_circle(method, path):
+  connection = http.client.HTTPConnection("127.0.0.1", facing.server_address[1], timeout=10)
+  connection.request(method, path, body=b"hello" if method == "POST" else None, headers={"Authorization": "Bearer k", "X-Forwarded-For": "100.64.0.9"})
+  answer = connection.getresponse()
+  body = answer.read()
+  connection.close()
+  return answer.status, body
+a.write_atomic(a.published_path(), '{"schema":1,"models":[]}\n')
+check("the circle gets the listing at /local-ai/models.json", ask_circle("GET", "/local-ai/models.json") == (200, b'{"schema":1,"models":[]}'))
+check("the circle reaches a shared model under /local-ai only", ask_circle("POST", "/local-ai/shared/v1/chat/completions")[0] == 200 and ask_circle("POST", "/shared/v1/chat/completions")[0] == 404)
+check("a circle caller counts by its own address, not a header it sends", tracker.seen["shared"].keys() == {"127.0.0.1"}, repr(tracker.seen))
+os.unlink(a.published_path())
+facing.shutdown()
 proxy.shutdown()
 model.shutdown()
 
