@@ -377,10 +377,10 @@ env_rt = copy.deepcopy(rt)
 env_rt["inputs"]["model"] = {"env": "MODEL_PATH"}
 env_text = a.render_container("model", changed, env_rt, variant, roles, gpu, "a" * 16)
 check("environment values are quoted and escaped", 'Environment="MODEL_PATH=/models/50%% $$HOME \\"quoted space\\" \\\\tail"' in env_text)
-smi = "NVIDIA GeForce RTX 3090, 24576, 8.6\nNVIDIA GeForce RTX 3090, 24576, 8.6\n"
+smi = "NVIDIA GeForce RTX 3090, 24576\nNVIDIA GeForce RTX 3090, 24576\n"
 found = a.nvidia_gpus(smi)
 check("discrete NVIDIA GPUs are listed from nvidia-smi", [g["family"] for g in found] == ["nvidia-rtx3090"] * 2 and found[1]["nvidia_index"] == 1)
-check("a discrete GPU's memory is its VRAM, not unified", found[0]["memory_gib"] == 24 and found[0]["unified"] is False and found[0]["compute_cap"] == "8.6")
+check("a discrete GPU's memory is its VRAM, not unified", found[0]["memory_gib"] == 24 and found[0]["unified"] is False)
 check("nvidia-smi output that isn't a table lists nothing", a.nvidia_gpus("") == [] and a.nvidia_gpus("No devices were found\n") == [])
 check("a workstation card keeps its words in the family", a.nvidia_family("NVIDIA RTX PRO 6000 Blackwell Workstation Edition") == "nvidia-rtxpro6000blackwellworkstationedition")
 with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "nvidia_gpus", return_value=found[:1]), patch.object(a, "meminfo", return_value={"MemTotal": 78 * 2**30}):
@@ -398,10 +398,19 @@ vrecipe = {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}
 check("a recipe measured at 24 GB VRAM qualifies on a 3090 whatever the RAM", a.qualified(vrecipe, vprof, vgpu) and a.qualified(vrecipe, dict(vprof, ram_class=32), vgpu))
 check("a recipe measured at 16 GB VRAM doesn't qualify on a 24 GB card", not a.qualified({"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 16}]}, vprof, vgpu))
 check("a RAM-class entry doesn't qualify a discrete GPU", not a.qualified({"hardware": [{"gpu": "nvidia-rtx3090", "ram_class": 96}]}, vprof, vgpu))
-check("a hardware entry names exactly one class", a.class_errors({"gpu": "x", "ram_class": 64, "vram_class": 24}, "w") and a.class_errors({"gpu": "x"}, "w") and not a.class_errors({"gpu": "x", "vram_class": 24}, "w") and a.class_errors({"vram_class": 64}, "w") and a.class_errors({"ram_class": 24}, "w"))
+check("a hardware entry with both classes is refused", bool(a.class_errors({"gpu": "x", "ram_class": 64, "vram_class": 24}, "w")))
+check("a hardware entry with no class is refused", bool(a.class_errors({"gpu": "x"}, "w")))
+check("a hardware entry with a vram_class is accepted", not a.class_errors({"gpu": "x", "vram_class": 24}, "w"))
+check("a vram_class outside its list is refused", bool(a.class_errors({"vram_class": 64}, "w")))
+check("a ram_class outside its list is refused", bool(a.class_errors({"ram_class": 24}, "w")))
 vbest = {"class": [{"gpu": "nvidia-rtx3090", "vram_class": 24, "recipes": ["model"]}]}
 check("best.toml matches a discrete GPU on VRAM", a.match_class(vbest, vprof, vgpu) is vbest["class"][0] and a.match_class(vbest, vprof, rgpu) is None)
-check("best.toml accepts a vram_class and rejects both", not any("class" in e and "must be" in e for e in a.validate_best(vbest, {"model": {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}})) and a.validate_best({"class": [dict(vbest["class"][0], ram_class=64)]}, {"model": vrecipe}))
+check("best.toml accepts a vram_class", not a.validate_best(vbest, {"model": {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}}))
+check("best.toml refuses an entry with both classes", bool(a.validate_best({"class": [dict(vbest["class"][0], ram_class=64)]}, {"model": vrecipe})))
+real = a.load_catalog()
+rtx = dict(found[0])
+rprof = {"platform": "x86", "ram_class": 96, "ram_gib": 78, "gpus": [rtx]}
+check("best on a 3090 is the Lightning recipe", a.resolve_best(real, rprof, rtx)[0] == "nemotron-3.5-lightning-tensorfold")
 positional_rt = copy.deepcopy(runtime)
 positional_rt["command"] = ["server", "serve"]
 positional_rt["inputs"]["model"] = {"positional": True}

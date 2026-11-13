@@ -386,17 +386,16 @@ def nvidia_family(name):
 
 
 def nvidia_gpus(smi_output=None):
-  """Discrete NVIDIA GPUs, one per `nvidia-smi` row of "name, memory.total MiB, compute_cap". Their
+  """Discrete NVIDIA GPUs, one per `nvidia-smi` row of "name, memory.total MiB". Their
   memory is their own VRAM, apart from the system's, unlike the GB10's."""
   if smi_output is None:
     try:
-      smi_output = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+      smi_output = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
       return []
   gpus = []
   for index, line in enumerate(smi_output.splitlines()):
-    name, _, rest = line.partition(",")
-    total, _, cap = rest.partition(",")
+    name, _, total = line.partition(",")
     try:
       mib = float(total)
     except ValueError:
@@ -405,7 +404,6 @@ def nvidia_gpus(smi_output=None):
       "vendor": "nvidia",
       "family": nvidia_family(name),
       "name": name.strip(),
-      "compute_cap": cap.strip(),
       "nvidia_index": index,
       "render_node": "",
       "vram_gib": round(mib / 1024, 2),
