@@ -1,0 +1,50 @@
+recipe = "nemotron-3.5-lightning-tensorfold"
+measured_at = "2026-11-13"
+image = "localhost/tensorfold-x86@sha256:004b8ff96bf48de0529549a8c5763a7f528923a4cc9d860dc1a5359fc8882002"
+ctx = 65536
+load_seconds = 24.0
+fileset = "3244c1ffc6425aee"
+method = "tools/bench: 1 warmup, then a short prompt, a ~32K-token prompt from bench/context.txt and a code-copying edit of bench/edit.py.txt, temperature 0, enable_thinking false, 512 tokens out, streamed"
+
+[machine]
+platform = "x86"
+gpu = "nvidia-rtx3090"
+ram_class = 96
+vram_class = 24
+system = "ASUS System Product Name"
+kernel = "7.2.15-2-omarchy"
+cpu = "AMD Ryzen 5 5600X 6-Core Processor"
+gpu_driver = "615.78.08"
+
+[memory]
+observed_at_load_gib = 0.8
+min_available_during_bench_gib = 65.7
+total_gib = 78.4
+
+[short]
+prompt_tokens = 45
+completion_tokens = 50
+ttft_s = 0.03
+prefill_tok_s = 1403.3
+decode_tok_s = 470.5
+total_s = 0.14
+
+[long]
+prompt_tokens = 32348
+completion_tokens = 512
+ttft_s = 3.96
+prefill_tok_s = 8168.5
+decode_tok_s = 552.3
+total_s = 4.89
+
+[edit]
+prompt_tokens = 2273
+completion_tokens = 512
+ttft_s = 0.23
+prefill_tok_s = 9708.9
+decode_tok_s = 1271.4
+total_s = 0.64
+
+[[artifacts]]
+repo = "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit"
+revision = "d9d758fb83953437f7263256b0d96157e2a348b8"
