@@ -23,3 +23,9 @@ recipes = ["nemotron-3.5-bolt-tensorfold", "qwen3.8-27b-tensorfold"]
 gpu = "nvidia-gb10-pair"
 ram_class = 128
 recipes = ["glm-5.3-flash-tensorfold-pair"]
+
+# Apple Silicon: llama.cpp on the Vulkan driver. Sized by memory only; no family-specific tuning yet.
+[[class]]
+gpu = "apple-silicon"
+ram_class = 96
+recipes = ["qwen3.8-27b-llamacpp-vulkan"]

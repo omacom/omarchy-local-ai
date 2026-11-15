@@ -1,0 +1,35 @@
+name = "Qwen3.8 27B"
+summary = "Dense 27B at 4-bit on the Apple Silicon GPU. A solid agent model that leaves most of a 96 GB Mac free for the desktop."
+runtime = "llamacpp-vulkan"
+vendor = "qwen"
+architecture = "dense"
+input = ["text"]
+
+[[hardware]]
+gpu = "apple-silicon"
+ram_class = 96
+measured = "measurements/qwen3.8-27b-llamacpp-vulkan-apple-silicon-96.toml"
+
+# Unsloth's dynamic 4-bit build. The runtime's llama.cpp reads it whole into GPU memory (--load-mode none), so the weights
+# count once.
+[[artifacts]]
+repo = "unsloth/Qwen3.8-27B-GGUF"
+revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502"
+license = "apache-2.0"
+files = ["Qwen3.8-27B-UD-Q4_K_XL.gguf"]
+model = "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+
+# Weights are 16.4 GiB. Context is capped at 8192 tokens: a 32768-token prompt faults the GPU on
+# this driver, and 8192 is the largest prompt measured clean. `use best` serves the largest variant.
+[[variant]]
+ctx = 8192
+peak_ram_gib = 22
+peak_gpu_gib = 22
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+
+[server]
+args = ["--load-mode", "none", "--parallel", "1", "--jinja"]

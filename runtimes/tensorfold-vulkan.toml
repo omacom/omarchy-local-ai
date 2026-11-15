@@ -1,0 +1,21 @@
+# TensorFold's native server on the Vulkan driver of Apple Silicon Macs, from
+# joshuaswarren/omarchy-tensorfold-vulkan-image: tensorfold-native built from source with its Vulkan backend on the
+# Arch Linux ARM Vulkan driver, the build the host runs. The render node is the only device the container gets.
+# This backend serves one Qwen3.5 2B dense checkpoint (MLX affine 4-bit, group 64), one stream at a time, greedy
+# only, with at most 7168 tokens of context. It refuses a request with a temperature above 0, so the runtime maps no
+# sampling inputs. Configured by `tensorfold-native serve` arguments, with the model directory bare and the key in
+# TENSORFOLD_API_KEY.
+image = "ghcr.io/joshuaswarren/tensorfold-vulkan@sha256:c8bae563c000af5786323eb580421edd9ebc075c02d6c694c1dcf80f987f0ed8"
+tier = "third-party"
+review = "reviews/tensorfold-vulkan-c8bae563c000.toml"
+port = 8888
+command = ["tensorfold-native", "serve", "--backend", "vulkan", "--host", "0.0.0.0", "--port", "8888", "--no-update-check"]
+health = { probe = ["curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8888/health"] }
+run = { devices = ["render"], group_add = "keep-groups", memlock = "unlimited" }
+reserved = ["--backend", "--host", "--port", "--api-key", "--api-key-file", "--allowed-host", "--allowed-origin", "--learn", "--learn-dir", "--learn-conversations", "--recall", "--recall-dir", "--record", "--dashboard", "--metrics-open", "TENSORFOLD_API_KEY", "TENSORFOLD_NO_UPDATE_CHECK", "HF_HUB_OFFLINE", "HF_TOKEN"]
+
+[inputs]
+model = { positional = true }
+ctx = { arg = "--context" }
+alias = { arg = "--name" }
+key = { env = "TENSORFOLD_API_KEY" }

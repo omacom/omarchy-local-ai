@@ -1,0 +1,24 @@
+# llama.cpp's server (commit cd959ba, MIT) on the Vulkan driver of Apple Silicon Macs, from
+# joshuaswarren/omarchy-llamacpp-vulkan-image: a static llama-server on the Arch Linux ARM Vulkan driver, the
+# build the host runs, with no patches. The render node is the only device the container gets.
+# Configured by `llama-server` arguments. The key arrives in LLAMA_API_KEY, so it never shows in the process list.
+# The server answers /health and the web UI without the key; --no-webui removes the UI and the health route
+# carries no data.
+image = "ghcr.io/joshuaswarren/llamacpp-vulkan@sha256:80a3fef4e1c0f56e472f4391b053a2965d36cd63eff8dd4659ba091f89cf9bbc"
+tier = "third-party"
+review = "reviews/llamacpp-vulkan-80a3fef4e1c0.toml"
+port = 8080
+command = ["llama-server", "--host", "0.0.0.0", "--port", "8080", "--n-gpu-layers", "999", "--no-webui"]
+health = { probe = ["curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8080/health"] }
+run = { devices = ["render"], group_add = "keep-groups", memlock = "unlimited" }
+reserved = ["--host", "--port", "--api-key", "--api-key-file", "--webui", "--no-webui", "--n-gpu-layers", "-ngl", "--path", "--api-prefix", "--ssl-key-file", "--ssl-cert-file", "--hf-repo", "-hf", "--model-url", "-mu", "--hf-token", "--props", "--slots", "--metrics"]
+
+[inputs]
+model = { arg = "--model" }
+draft = { arg = "--model-draft" }
+ctx = { arg = "--ctx-size" }
+alias = { arg = "--alias" }
+key = { env = "LLAMA_API_KEY" }
+temperature = { arg = "--temp" }
+top_p = { arg = "--top-p" }
+top_k = { arg = "--top-k" }

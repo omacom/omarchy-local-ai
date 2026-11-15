@@ -1,0 +1,33 @@
+name = "Qwen3.5 2B"
+summary = "Small dense 2B at 4-bit on TensorFold's Vulkan server for the Apple Silicon GPU. One stream, greedy replies and a 7168-token window."
+runtime = "tensorfold-vulkan"
+vendor = "qwen"
+architecture = "dense"
+input = ["text"]
+
+[[hardware]]
+gpu = "apple-silicon"
+ram_class = 96
+measured = "measurements/qwen3.5-2b-tensorfold-vulkan-apple-silicon-96.toml"
+
+# The MLX community's affine 4-bit, group-64 export, the one format this backend reads. The server loads the
+# directory.
+[[artifacts]]
+repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
+revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
+license = "apache-2.0"
+files = ["*.safetensors", "*.json", "chat_template.jinja"]
+dest = "target"
+model = "."
+
+# The Vulkan attention reads at most 7168 keys, so the window is 7168 tokens. The peaks round up the measured 1.5 GiB
+# drop in available memory through load and a 6173-token prompt on the 96 GB M2 Max (unified memory).
+[[variant]]
+ctx = 7168
+peak_ram_gib = 2
+peak_gpu_gib = 2
+
+# The server's default reply length, which agents send as max_tokens. It rejects a request whose prompt plus
+# max_tokens passes the window, so the cap leaves 5120 tokens for the prompt.
+[server]
+args = ["--max-tokens", "2048"]

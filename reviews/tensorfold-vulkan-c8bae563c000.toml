@@ -1,0 +1,17 @@
+image = "ghcr.io/joshuaswarren/tensorfold-vulkan@sha256:c8bae563c000af5786323eb580421edd9ebc075c02d6c694c1dcf80f987f0ed8"
+publisher = "joshuaswarren"
+reviewer = "pending: Omacom maintainer"
+date = "2026-11-15"
+version = "tensorfold-native 1.2.9, built from joshuaswarren/TensorFold b8b634101"
+source = "open (Apache-2.0), built at commit d07a55f of https://github.com/joshuaswarren/omarchy-tensorfold-vulkan-image from TensorFold b8b634101df9666769386bf7b62ebcb23388b4bd (the Vulkan pull request stack that ends at ashhart/TensorFold pull request 3401, plus the k-split decode matmul in 3435 and the tiled decode attention in 3436) with zig 0.17.0. The base rootfs (ArchLinuxARM-aarch64-latest) is unpinned, so the digest cannot be rebuilt byte for byte."
+license_url = "https://raw.githubusercontent.com/joshuaswarren/TensorFold/b8b634101df9666769386bf7b62ebcb23388b4bd/LICENSE"
+license_sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+checked = [
+  "license: TensorFold is Apache-2.0 (the LICENSE at b8b634101 equals the 1.2.1 release's); its LICENSE, NOTICE and THIRD_PARTY_NOTICES.md ship in /usr/share/licenses/tensorfold; the Vulkan driver and the Arch Linux ARM packages keep their own notices",
+  "build: GitHub Actions on an arm64 runner, image commit d07a55f, `zig build native-vulkan -Dvulkan=true -Dtarget=aarch64-linux-gnu -Dcpu=apple_m1` with zig 0.17.0 checked against its SHA-256; the root filesystem holds glibc, gcc-libs, bash, coreutils, curl and the Vulkan loader and driver, and tensorfold-native links only libc and opens Vulkan at run time",
+  "behavior: the Vulkan backend serves one Qwen3.5 2B dense checkpoint (MLX affine 4-bit, group 64), one stream, greedy only, and refuses a --context above 7168 and a request temperature above 0",
+  "auth (2026-11-15 on a 96 GB M2 Max, through omarchy-local-ai, this image): the key covers /v1/models and /v1/chat/completions (/v1/models returned 401 without the key and 200 with it)",
+  "acceptance (2026-11-15, 96 GB M2 Max, through omarchy-local-ai, this image): loaded in 3.0 s; an agent-shaped request (2901-token prompt, no temperature, the recipe's 2048-token cap) returned 200 with finish_reason length; temperature 0.7 returned 400 with \"this engine decodes greedily only\"",
+  "caveat: /health answers without the key",
+  "caveat: the window is 7168 tokens; a prompt plus max_tokens above it is refused",
+]
