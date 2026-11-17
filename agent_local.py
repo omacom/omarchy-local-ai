@@ -42,6 +42,9 @@ SECRET = "omarchy-agent-local-key"
 KEY_ENV = "OMARCHY_LOCAL_KEY"
 KEY_PLACEHOLDER = "@OMARCHY_LOCAL_KEY@"
 RESERVE_GIB = 8
+# Agents read whole files and long tool output, so every recipe offers a context of at least this
+# many tokens. A smaller variant is a fallback for machines the large one doesn't fit.
+MIN_CONTEXT = 250_000
 # How often a setup rewrites its progress for the panel, and the window its speed is averaged over.
 PROGRESS_PUBLISH_SECONDS = 0.5
 PROGRESS_WINDOW_SECONDS = 4
@@ -816,6 +819,9 @@ def validate_recipe(rid, recipe, runtimes, root=None):
         errors.append(f"{at}.{field}: must be a positive number")
     if variant.get("ctx") and runtime and "ctx" not in inputs:
       errors.append(f"{at}: runtime '{runtime_id}' has no ctx input")
+  contexts = [v["ctx"] for v in variants if isinstance(v, dict) and isinstance(v.get("ctx"), int)]
+  if contexts and max(contexts) < MIN_CONTEXT:
+    errors.append(f"{where}.variant: needs one with a context of at least {MIN_CONTEXT:,} tokens (largest is {max(contexts):,})")
   sampling = recipe.get("sampling", {})
   if not isinstance(sampling, dict):
     errors.append(f"{where}.sampling: must be a table")

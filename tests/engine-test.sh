@@ -58,7 +58,7 @@ runtime = {
   "inputs": {"model": {"arg": "--model"}, "draft": {"arg": "--draft"},
              "ctx": {"arg": "--ctx"}, "alias": {"arg": "--alias"}, "key": {"env": "API_KEY"}},
 }
-variant = {"ctx": 4096, "peak_ram_gib": 16, "peak_gpu_gib": 16}
+variant = {"ctx": 262144, "peak_ram_gib": 16, "peak_gpu_gib": 16}
 artifact = {"repo": "test/model", "revision": "b" * 40, "license": "mit",
             "files": ["model.gguf", "tokenizer/*.json"], "model": "model.gguf"}
 recipe = {"name": "Test model", "summary": "Fixture", "runtime": "server",
@@ -68,6 +68,8 @@ gpu = {"vendor": "amd", "family": "amd-strix-halo", "memory_gib": 48}
 profile = {"platform": "x86", "ram_class": 64, "ram_gib": 64, "gpus": [gpu]}
 entry = {"gpu": gpu["family"], "ram_class": 64, "recipes": ["model"]}
 check("valid recipe and runtime fixtures are accepted", not a.validate_runtime("server", runtime) and not a.validate_recipe("model", recipe, {"server": runtime}))
+check("a recipe needs a variant of at least 250K context", any("at least 250,000 tokens" in e for e in a.validate_recipe("model", dict(recipe, variant=[dict(variant, ctx=131072)]), {"server": runtime}))
+      and not a.validate_recipe("model", dict(recipe, variant=[variant, dict(variant, ctx=131072)]), {"server": runtime}))
 
 for rid in ("..", "a..b", "-a", "a-", ".a", "a."):
   check(f"recipe and runtime reject unsafe id {rid}", bool(a.validate_runtime(rid, runtime)) and bool(a.validate_recipe(rid, recipe, {"server": runtime})))
@@ -115,8 +117,8 @@ catalog = SimpleNamespace(recipes={"model": copy.deepcopy(recipe)}, runtimes={"s
 check("best requires an exact GPU and RAM pair", a.match_class({"class": [entry]}, profile, dict(gpu, family="other")) is None and a.match_class({"class": [entry]}, dict(profile, ram_class=128), gpu) is None)
 check("best requires a GPU selector", any(".gpu" in e for e in a.validate_best({"class": [{"ram_class": 64, "recipes": ["model"]}]}, {"model": recipe})))
 check("best rejects platform selectors", any(".platform" in e for e in a.validate_best({"class": [dict(entry, platform="x86")]}, {"model": recipe})))
-catalog.recipes["model"]["variant"] = [variant, dict(variant, ctx=8192), dict(variant, ctx=16384, peak_ram_gib=60)]
-check("largest fitting context wins", a.resolve_best(catalog, profile, gpu)[1]["ctx"] == 8192)
+catalog.recipes["model"]["variant"] = [dict(variant, ctx=131072), variant, dict(variant, ctx=524288, peak_ram_gib=60)]
+check("largest fitting context wins", a.resolve_best(catalog, profile, gpu)[1]["ctx"] == 262144)
 small = dict(variant, ctx=8192, args=["--parallel", "1"])
 catalog.recipes["model"]["variant"] = [small, dict(variant, ctx=16384, peak_ram_gib=60, args=["--parallel", "3"])]
 picked = a.resolve_best(catalog, profile, gpu)[1]
@@ -214,7 +216,7 @@ path.write_bytes(payload)
 check("git blob hash verifies intact file", a.verify_file(path, files[1]))
 path.write_bytes(payload[:-1] + b"!")
 check("git blob hash rejects same-size one-byte corruption", not a.verify_file(path, files[1]))
-record = {"recipe": "model", "method": 'say "hello"\nnext\\line', "ctx": 4096,
+record = {"recipe": "model", "method": 'say "hello"\nnext\\line', "ctx": 262144,
           "machine": {"platform": "x86", "flags": ["a", "b"]}, "memory": {"peak": 16.5},
           "artifacts": [{"path": "one", "sha256": "a" * 64}, {"path": "two", "git_oid": oid}],
           "short": {"ttft": 1.5, "ok": True}}
@@ -359,7 +361,7 @@ pair_profile = {"platform": "aarch64-gb10", "ram_class": 128, "ram_gib": 121.9, 
 check("a pair outranks its own node", a.choose_gpu(pair_profile)["family"] == "nvidia-gb10-pair")
 single = dict(recipe, hardware=[{"gpu": "nvidia-gb10", "ram_class": 128, "measured": "m.toml"}], runtime="server")
 paired = dict(recipe, hardware=[{"gpu": "nvidia-gb10-pair", "ram_class": 128, "measured": "m.toml"}], runtime="pair",
-              variant=[{"ctx": 4096, "peak_ram_gib": 104, "peak_gpu_gib": 104}])
+              variant=[{"ctx": 262144, "peak_ram_gib": 104, "peak_gpu_gib": 104}])
 check("a pair machine runs single-node recipes on its own GPU", a.recipe_gpu(pair_profile, single)["family"] == "nvidia-gb10" and a.recipe_gpu(pair_profile, paired)["family"] == "nvidia-gb10-pair")
 nv_rt = dict(runtime, run={"devices": ["cdi-nvidia"]})
 pair_catalog = SimpleNamespace(recipes={"single": single, "paired": paired}, runtimes={"server": nv_rt, "pair": pair_rt},
@@ -570,7 +572,7 @@ write_toml(repo / "best.toml", {"class": [entry]})
 write_toml(repo / "runtimes/server.toml", runtime)
 write_toml(repo / "recipes/model.toml", recipe)
 write_toml(repo / "reviews/server.toml", {"image": runtime["image"], "publisher": "Fixture", "reviewer": "Tester", "date": "2026-01-01", "license_url": "https://example.test/license", "license_sha256": "a" * 64, "checked": ["key", "network"]})
-write_toml(repo / "measurements/model.toml", {"ctx": 4096})
+write_toml(repo / "measurements/model.toml", {"ctx": 262144})
 os.environ["OMARCHY_LOCAL_AI_CATALOG"] = str(repo)
 check("catalog root can be overridden", a.load_catalog().root == str(repo))
 write_toml(repo / "catalog.toml", {"schema": 999})
@@ -650,7 +652,7 @@ with patch.object(a, "known_models", return_value=["current"]), patch.object(a, 
 image_recipe = {**copy.deepcopy(recipe), "input": ["text", "image"]}
 check("a recipe can take images", not [e for e in a.validate_recipe("model", image_recipe, {"server": runtime}, root) if ".input" in e])
 check("a recipe has to take text", any(".input" in e for e in a.validate_recipe("model", {**copy.deepcopy(recipe), "input": ["image"]}, {"server": runtime}, root)))
-with patch.object(a, "resolve_model", return_value={"recipe_id": "model", "recipe": image_recipe, "variant": {"ctx": 4096}}):
+with patch.object(a, "resolve_model", return_value={"recipe_id": "model", "recipe": image_recipe, "variant": {"ctx": 262144}}):
   overlay = json.loads(open(a.opencode_overlay("model")[0]).read())["provider"][a.OVERLAY_PROVIDER]["models"]["model"]
   check("the OpenCode overlay declares image input", overlay["attachment"] and overlay["modalities"]["input"] == ["text", "image"])
 
@@ -660,7 +662,7 @@ def pi_registered(path):
   text = open(path).read()
   name, _, rest = text.split("pi.registerProvider(", 1)[1].partition(", ")
   return json.loads(name), json.loads(rest.rsplit(");", 1)[0])
-pi_set_up = {"alpha": {"recipe_id": "alpha", "recipe": image_recipe, "variant": {"ctx": 4096}},
+pi_set_up = {"alpha": {"recipe_id": "alpha", "recipe": image_recipe, "variant": {"ctx": 262144}},
              "beta": {"recipe_id": "beta", "recipe": {**copy.deepcopy(recipe), "name": "Beta"}, "variant": {"ctx": 8192}}}
 pi_ext = Path(a.pi_extension_path())
 with patch.object(a, "known_models", return_value=["alpha", "beta"]), patch.object(a, "load_model", side_effect=pi_set_up.get):
@@ -673,7 +675,7 @@ with patch.object(a, "known_models", return_value=["alpha", "beta"]), patch.obje
   check("pi's extension registers the omarchy-local provider", name == "omarchy-local" == a.OVERLAY_PROVIDER)
   check("pi's extension lists every model set up at its own port", urls == {"alpha": a.endpoint("alpha"), "beta": a.endpoint("beta")} and urls["alpha"] != urls["beta"], repr(urls))
   check("pi's extension reads the key from its file", provider["apiKey"] == "!cat -- " + shlex.quote(a.key_path()))
-  check("pi's extension carries each model's context and input", [(m["contextWindow"], m["input"]) for m in provider["models"]] == [(4096, ["text", "image"]), (8192, ["text"])])
+  check("pi's extension carries each model's context and input", [(m["contextWindow"], m["input"]) for m in provider["models"]] == [(262144, ["text", "image"]), (8192, ["text"])])
   with patch.object(a, "resolve_model", return_value=pi_set_up["beta"]):
     path, overlay_name, overlay_model = a.pi_overlay("beta")
   name, provider = pi_registered(path)

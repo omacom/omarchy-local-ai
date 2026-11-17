@@ -32,6 +32,7 @@ The engine reads the catalog beside `agent_local.py`, following the installed en
 ## Add a recipe
 
 1. Add a recipe and any runtime/review it requires, or add a measured hardware class to an existing recipe. Update `best.toml` where appropriate.
+   Every recipe offers a variant with a context of at least 250K tokens; a smaller one is only a fallback for machines the large one doesn't fit.
 2. Run `./omarchy-local-ai validate .`, then `./omarchy-local-ai use <id>` on the target hardware.
 3. Run `./tools/bench <id> --output measurements/<id>-<gpu>-<ram>.toml` and reference the measurement in the recipe.
 4. Submit the recipe, review and measurement together. CI validates the catalog online and runs engine tests. Merging catalog changes grants software publication authority within the engine's security boundary.
