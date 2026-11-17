@@ -197,7 +197,14 @@ def state_dir():
 
 
 def data_dir():
-  return os.path.join(home(), ".local", "share", "omarchy", "agent-local")
+  """Where the model's weights live.
+
+  Omarchy links the user's data tree into its root-owned package directory, so the weights
+  go beside the engine's state when that tree cannot be written."""
+  share = os.path.join(home(), ".local", "share", "omarchy")
+  if os.path.islink(share) and not os.access(os.path.realpath(share), os.W_OK):
+    return os.path.join(state_dir(), "data")
+  return os.path.join(share, "agent-local")
 
 
 def config_dir():
