@@ -4,6 +4,8 @@ The local-model engine, recipe catalog and internals reference for Omarchy. The 
 
 The engine resolves recipes, downloads pinned weights, and manages rootless Podman model servers with an internal network, read-only root, dropped capabilities, allowlisted devices and authenticated loopback endpoints. The catalog ships with the engine; it is never fetched at runtime. See [engine contract](docs/engine.md) for the security boundary, lifecycle and state formats.
 
+It runs on AMD's unified GPUs (Strix Halo and Strix Point), NVIDIA's GB10 and N1x, and Apple Silicon under Asahi, whose AGX GPU is reached through Vulkan. Each GPU family has its own measurements; a machine only runs recipes measured on its own family and memory class.
+
 ## Run from a checkout
 
 Python 3.11 or newer is required. On Omarchy, run:

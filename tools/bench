@@ -45,7 +45,9 @@ def nvidia_driver(version_text):
 def system_name():
   vendor = _read("/sys/class/dmi/id/sys_vendor").strip()
   product = _read("/sys/class/dmi/id/product_name").strip()
-  return " ".join(part for part in (vendor, product) if part)
+  name = " ".join(part for part in (vendor, product) if part)
+  # Apple Silicon has no DMI: its device tree names the machine.
+  return name or _read("/proc/device-tree/model").replace("\x00", "").strip()
 
 
 def _toml_value(value):
