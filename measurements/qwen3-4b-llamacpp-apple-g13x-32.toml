@@ -1,0 +1,48 @@
+recipe = "qwen3-4b-llamacpp"
+measured_at = "2026-11-18"
+image = "ghcr.io/ggml-org/llama.cpp@sha256:5c73025f2072135ad37e306db9a57c685d8a349cfa5cb82b5c0f385b97567c94"
+ctx = 32768
+load_seconds = 6.0
+fileset = "ea5b7adcee05a264"
+method = "tools/bench: 1 warmup, then a short prompt, a ~32K-token prompt from bench/context.txt and a code-copying edit of bench/edit.py.txt, temperature 0, enable_thinking false, 512 tokens out, streamed"
+
+[machine]
+platform = "aarch64-apple"
+gpu = "apple-g13x"
+ram_class = 32
+system = "Apple Inc. MacBookPro18,3"
+kernel = "7.2.11-16-1-ARCH"
+cpu = "Icestorm-M1-Pro + Firestorm-M1-Pro"
+
+[memory]
+observed_at_load_gib = 6.1
+min_available_during_bench_gib = 17.0
+total_gib = 31.1
+
+[short]
+prompt_tokens = 41
+completion_tokens = 287
+ttft_s = 0.77
+prefill_tok_s = 53.2
+decode_tok_s = 15.8
+total_s = 18.93
+
+[long]
+prompt_tokens = 30523
+completion_tokens = 512
+ttft_s = 1378.28
+prefill_tok_s = 22.1
+decode_tok_s = 3.2
+total_s = 1538.97
+
+[edit]
+prompt_tokens = 2160
+completion_tokens = 512
+ttft_s = 21.87
+prefill_tok_s = 98.7
+decode_tok_s = 12.2
+total_s = 63.87
+
+[[artifacts]]
+repo = "unsloth/Qwen3-4B-GGUF"
+revision = "22c9fc8a8c7700b76a1789366280a6a5a1ad1120"

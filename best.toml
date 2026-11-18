@@ -33,8 +33,9 @@ ram_class = 128
 recipes = ["glm-5.3-flash-tensorfold-pair", "deepseek-v4.1-flash-tensorfold-pair"]
 
 # Apple Silicon under Asahi: Vulkan on the AGX GPU, with no ROCm or CUDA. Its single heap is half
-# of RAM, so a 32 GB machine holds an 8B model in Q6_K beside a 32K-token context.
+# of RAM and the desktop draws from it too, so the light 4B comes first: a 32 GB machine keeps the
+# 8B in reserve. Both fit a 32K-token context.
 [[class]]
 gpu = "apple-g13x"
 ram_class = 32
-recipes = ["qwen3-8b-llamacpp"]
+recipes = ["qwen3-4b-llamacpp", "qwen3-8b-llamacpp"]
