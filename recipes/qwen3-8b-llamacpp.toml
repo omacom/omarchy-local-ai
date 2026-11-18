@@ -1,0 +1,35 @@
+# Alibaba's Qwen3 8B, on llama.cpp's Vulkan backend: the first recipe for Apple Silicon, where the
+# GPU is reached through Vulkan only. Its one Vulkan heap holds half of RAM (15.57 GiB on a 32 GB
+# M1 Pro), so an 8B model in Q6_K fits beside a 32K-token context, and a 30B one does not.
+name = "Qwen3 8B"
+runtime = "llamacpp-vulkan"
+vendor = "qwen"
+architecture = "dense"
+
+[[hardware]]
+gpu = "apple-g13x"
+ram_class = 32
+measured = "measurements/qwen3-8b-llamacpp-apple-g13x-32.toml"
+
+[[artifacts]]
+repo = "unsloth/Qwen3-8B-GGUF"
+revision = "a6adef130ffb23ddaf1a62fec9dced968c9bc482"
+license = "apache-2.0"
+files = ["Qwen3-8B-Q6_K.gguf"]
+model = "Qwen3-8B-Q6_K.gguf"
+
+# Measured: 11.2 GiB at load, about 12 GiB in the heap with the 32K context that decodes at
+# 10.6 tok/s on short prompts. AGX has no flash attention here, so a 30K-token prompt prefills at
+# 21.8 tok/s and then decodes at 2.8 tok/s: this machine suits short contexts.
+[[variant]]
+ctx = 32768
+peak_ram_gib = 13
+peak_gpu_gib = 13
+
+[sampling]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+
+[server]
+args = []
