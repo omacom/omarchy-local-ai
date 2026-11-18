@@ -1,0 +1,36 @@
+name = "Qwen3.5 2B"
+summary = "A 2B dense model at 4 bits, 1.6 GiB. Runs beside anything for summaries, routing and quick answers."
+runtime = "tensorfold-x86"
+vendor = "qwen"
+architecture = "dense"
+
+[[hardware]]
+gpu = "nvidia-rtx3090"
+vram_class = 24
+measured = "measurements/qwen3.5-2b-tensorfold-rtx3090-24.toml"
+
+# mlx-community's MLX affine 4-bit, group-64 export. The server loads the directory; the vision tower isn't loaded.
+[[artifacts]]
+repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
+revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
+license = "apache-2.0"
+files = ["*.safetensors", "*.json", "chat_template.jinja"]
+dest = "target"
+model = "."
+
+# Measured on an RTX 3090 beside a desktop: 8.2 GiB of VRAM at peak, most of it four streams' caches at this window
+# (the weights are 1.6 GiB). The 2 GiB prompt cache sits in host memory, which peaked at 0.4 GiB with it empty,
+# so 2.4 GiB with it full.
+[[variant]]
+ctx = 131072
+peak_ram_gib = 2.4
+peak_gpu_gib = 8.2
+args = ["--parallel", "4", "--prompt-cache-gib", "2"]
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = 20
+
+[server]
+args = ["--max-tokens", "16384"]

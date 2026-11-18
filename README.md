@@ -27,6 +27,7 @@ The engine reads the catalog beside `agent_local.py`, following the installed en
 - `runtimes/<id>.toml` — image pinned by digest, input mappings, health probe and allowlisted run options.
 - `reviews/` — license and behavior reviews for third-party image digests.
 - `measurements/` — evidence for hardware classes a recipe claims.
+- `images/<id>/` — the Containerfile and keys that build a runtime image Omacom doesn't publish, so its digest can be rebuilt and checked.
 - `tools/bench` and `bench/context.txt` — checkout-only benchmark script and long prompt.
 
 ## Add a recipe

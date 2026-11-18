@@ -196,6 +196,7 @@ def cmd_bench(argv):
       "platform": active["profile"]["platform"],
       "gpu": active["gpu"],
       "ram_class": active["profile"]["ram_class"],
+      **({"vram_class": gpu["vram_class"]} if gpu.get("vram_class") else {}),
       "system": system_name(),
       "kernel": os.uname().release,
       "cpu": cpu_name(_read("/proc/cpuinfo"), lscpu_text()),
