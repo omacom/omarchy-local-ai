@@ -89,8 +89,10 @@ APIS = ("openai", "sdcpp")
 GFX_FAMILIES = {"gfx1151": "amd-strix-halo", "gfx1150": "amd-strix-point"}
 # Apple Silicon's GPU on Asahi Linux: unified memory with no VRAM of its own, driven through
 # Vulkan on the render node. Its generation names the family (g13x is M1 Pro/Max/Ultra), since
-# each generation's GPU differs in throughput the way the AMD families do.
-APPLE_DRIVER = "asahi"
+# each generation's GPU differs in throughput the way the AMD families do. The render node's
+# driver is `asahi` on most kernels and `aurora` on the Omarchy M kernel; the display engine
+# beside it is `apple-drm` and owns no render node.
+APPLE_GPU_DRIVERS = ("asahi", "aurora")
 # NVIDIA platforms whose GPU shares the system's memory. The N1x is the GB10's GPU in a
 # laptop: it keeps its own family name so a measurement records which machine it came from,
 # but it runs what a GB10 with the same memory runs.
@@ -298,7 +300,7 @@ def apple_gpus(ram_gib, drm_root="/sys/class/drm"):
       continue
     device = os.path.join(drm_root, entry, "device")
     props = _kv_lines(os.path.join(device, "uevent"))
-    if props.get("DRIVER") != APPLE_DRIVER:
+    if props.get("DRIVER") not in APPLE_GPU_DRIVERS:
       continue
     compatible = [props.get(f"OF_COMPATIBLE_{index}") for index in range(int(props.get("OF_COMPATIBLE_N", "0") or 0))]
     # "apple,agx-g13x" is the GPU generation shared by one SoC family (M1 Pro/Max/Ultra);

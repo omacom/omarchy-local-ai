@@ -11,7 +11,8 @@ checked = [
   "build: the OCI labels name the source repository and the revision d3c3e242c16b8cbf51400fad410cd69b22d64f35 (version b12464); the pinned digest is the multi-platform index, whose linux/arm64 manifest holds the same build (the engine pulls arm64 on Apple Silicon); /app holds llama-server, libggml-vulkan.so and the CPU variants, and no weights",
   "behavior: loads one GGUF model from the read-only /models path given as --model; it neither downloads nor writes weights, and its only writable path is /tmp",
   "acceptance (2026-11-18): serves with a read-only root, a tmpfs at /tmp, all capabilities dropped, no-new-privileges and only the render node, on an Apple M1 Pro (Asahi, AGX through Vulkan); llama.cpp reports the model's layers on Vulkan0 and the CPU fallback only for flash attention over K/V rows, which it disables",
-  "acceptance (2026-11-18): rejects requests without the key (401) and serves them with it (200), listing the recipe alias on /v1/models; /health answers unauthenticated by design and is still the probe the engine uses",
+  "acceptance (2026-11-18): the key arrives as LLAMA_API_KEY in its environment, so it never shows in the process list; without it requests get 401 and with it 200, listing the recipe alias on /v1/models; --no-webui removes the web UI and /health stays public, carrying no data",
   "acceptance (2026-11-18): on a 32 GB M1 Pro the AGX Vulkan heap is 15.57 GiB, half of RAM, and weights and context share it: a 30B model in IQ4_XS (15.2 GiB) exhausted it while loading, an 8B model in Q6_K with a 32K-token context peaks at about 11 GiB, all layers on Vulkan0",
+  "acceptance (2026-11-18): --load-mode none reads the weights whole into GPU memory, --parallel 1 keeps one slot, and a Q8_0 K/V cache works on AGX (a short generation completes with it)",
   "acceptance (2026-11-18): stops on SIGTERM in about 0.2 s",
 ]

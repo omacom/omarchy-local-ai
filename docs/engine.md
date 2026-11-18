@@ -83,7 +83,9 @@ A machine's GPUs come from three places. AMD GPUs are read from KFD topology as
 `nvidia-gb10`, `nvidia-n1x`, and the `nvidia-gb10-pair` a cable makes of two of them.
 Apple Silicon under Asahi is `apple-<generation>` (`apple-g13x` is M1 Pro/Max/Ultra),
 taken from the GPU's device-tree compatible string so that each GPU generation, which
-differs in throughput the way AMD's families do, keeps its own measurements.
+differs in throughput the way AMD's families do, keeps its own measurements. Its render
+node is the one whose driver is `asahi` or, on the Omarchy M kernel, `aurora`; the
+display engine beside it owns no render node.
 
 The GPUs differ in what they can be given. An AMD GPU's VRAM and GTT are read from
 sysfs, and a unified one's cap can be raised towards the RAM above the desktop's

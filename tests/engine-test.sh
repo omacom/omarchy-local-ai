@@ -161,9 +161,12 @@ apple_root = Path(os.environ["HOME"]) / "drm-apple"
   "DRIVER=asahi\nOF_NAME=gpu\nOF_COMPATIBLE_0=apple,agx-t6000\nOF_COMPATIBLE_1=apple,agx-g13x\nOF_COMPATIBLE_N=2\n")
 (apple_root / "renderD129" / "device").mkdir(parents=True)
 (apple_root / "renderD129" / "device" / "uevent").write_text("DRIVER=amdgpu\nOF_COMPATIBLE_N=0\n")
+(apple_root / "renderD130" / "device").mkdir(parents=True)
+(apple_root / "renderD130" / "device" / "uevent").write_text("DRIVER=aurora\nOF_COMPATIBLE_0=apple,agx-t6000\nOF_COMPATIBLE_1=apple,agx-g13x\nOF_COMPATIBLE_N=2\n")
 apple = a.apple_gpus(32.0, drm_root=str(apple_root))
-check("an Asahi render node is an Apple GPU of the generation its SoC shares",
-      [(g["vendor"], g["family"], g["render_node"]) for g in apple] == [("apple", "apple-g13x", "/dev/dri/renderD128")],
+check("an Asahi or aurora render node is an Apple GPU of the generation its SoC shares",
+      [(g["vendor"], g["family"], g["render_node"]) for g in apple] ==
+      [("apple", "apple-g13x", "/dev/dri/renderD128"), ("apple", "apple-g13x", "/dev/dri/renderD130")],
       str(apple))
 check("an Apple GPU addresses half of RAM, its one Vulkan heap", apple[0]["memory_gib"] == 16 and apple[0]["unified"] and apple[0]["sysfs"] == "")
 with patch.object(a, "platform_name", return_value="aarch64-apple"), patch.object(a, "amd_gpus", return_value=[]), \
