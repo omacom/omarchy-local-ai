@@ -381,6 +381,9 @@ pair_port = a.port_for("paired")
 check("the pair unit shares the host network and publishes nothing", "Network=host" in pair_text and "PublishPort" not in pair_text)
 check("the pair unit binds its API to loopback on the model's port", f'"--host" "127.0.0.1" "--port" "{pair_port}"' in pair_text and f"127.0.0.1:{pair_port}/health" in pair_text)
 check("the pair unit mounts rank 0's state folder writable and reads the link from its environment file", f"models/paired/{'b' * 16}.rank0:/state\n" in pair_text and "EnvironmentFile=%h/.local/state/omarchy/agent-local/pair/paired.env" in pair_text)
+with patch.object(a, "data_dir", return_value=str(Path(os.environ["HOME"]) / ".local/state/omarchy/agent-local/data")):
+  fallback_text = a.render_container("paired", paired, pair_rt, paired["variant"][0], {"model": "model"}, pair_gpu, "b" * 16)
+check("the pair unit mounts rank 0 from the fallback data root", f"Volume=%h/.local/state/omarchy/agent-local/data/models/paired/{'b' * 16}.rank0:/state" in fallback_text)
 check("the pair unit starts and stops rank 1 with itself", "ExecStartPre=/usr/bin/env omarchy-agent-local link-worker start paired" in pair_text and "ExecStopPost=-/usr/bin/env omarchy-agent-local link-worker stop paired" in pair_text)
 _, rank_argv, _, _ = a.head_argv(pair_rt, paired, paired["variant"][0], {"model": "model"}, "paired")
 check("both ranks run the runtime's command, bound to loopback", rank_argv[-4:] == ["--host", "127.0.0.1", "--port", str(a.port_for("paired"))] and rank_argv[:2] == ["server", "serve"])
@@ -390,7 +393,8 @@ setup = {"schema": 1, "recipe_id": "paired", "runtime": pair_rt, "recipe": paire
 a.write_pair_setup(setup)
 here = {"addr": "10.99.1.1", "dev": "enp1", "hcas": ["rocep1", "roceP2"], "gid": "5"}
 there = {"addr": "10.99.1.2", "dev": "enp1", "hcas": ["rocep1", "roceP2"], "gid": "3"}
-with patch.object(a, "pair_link", return_value=(here, there)), patch.object(a, "peer_headroom") as headroom, patch.object(a, "pair_ssh") as ssh, patch.object(a, "pair_limits") as limits:
+with patch.object(a, "pair_link", return_value=(here, there)), patch.object(a, "peer_headroom") as headroom, patch.object(a, "pair_ssh") as ssh, patch.object(a, "pair_limits") as limits, \
+     patch.object(a, "peer_data_dir", return_value="/home/bob/.local/state/omarchy/agent-local/data"):
   a.pair_worker_start("paired")
 head_env = dict(line.split("=", 1) for line in Path(a.pair_env_path("paired")).read_text().splitlines())
 worker = shlex.split(ssh.call_args.args[1])
@@ -401,8 +405,8 @@ check("rank 1 starts on the peer as its user, with the head's command and the sa
       ssh.call_args.args[0] == "bob@10.99.1.2" and headroom.called
       and limits.called and all(flag in worker for flag in ("--read-only", "no-new-privileges", "/dev/infiniband", "f" * 64))
       and worker[worker.index("--cap-drop") + 1] == "all"
-      and f"/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}:/models:ro" in worker
-      and f"/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}.rank1:/state" in worker
+      and f"/home/bob/.local/state/omarchy/agent-local/data/models/paired/{'e' * 16}:/models:ro" in worker
+      and f"/home/bob/.local/state/omarchy/agent-local/data/models/paired/{'e' * 16}.rank1:/state" in worker
       and worker[worker.index("f" * 64) + 1:][:2] == ["server", "serve"] and worker[-4:] == ["--host", "127.0.0.1", "--port", str(a.port_for("paired"))], repr(worker))
 os.unlink(a.pair_setup_path("paired"))
 # Setup copies the image (only when the peer lacks it) and the file set, and makes both ranks' state folders.
@@ -411,13 +415,17 @@ def fake_run(argv, **kwargs):
   ran.append(argv)
   return SimpleNamespace(returncode=0, stdout="f" * 64 + "\n", stderr="")
 manifest = {"fileset": "e" * 16}
+local_data = str(Path(os.environ["HOME"]) / ".local/state/omarchy/agent-local/data")
+peer_data = "/home/bob/.local/state/omarchy/agent-local/data"
 with patch.object(a.subprocess, "run", side_effect=fake_run), patch.object(a.subprocess, "Popen") as save, \
-     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as ssh, patch.object(a, "load_installing", return_value=None):
+     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as ssh, patch.object(a, "load_installing", return_value=None), \
+     patch.object(a, "data_dir", return_value=local_data), patch.object(a, "peer_data_dir", return_value=peer_data):
   a.pair_setup("paired", manifest, pair_rt, {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob"})
 rsync = next(argv for argv in ran if argv[0] == "rsync")
 check("setup records the peer and the image by ID", manifest["pair"] == {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob", "image_id": "f" * 64})
-check("setup copies the file set to the peer, not an image it already has", not save.called and rsync[-1] == f"bob@10.99.1.2:/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}/")
-check("setup makes both ranks' state folders", Path(a.rank_dir("paired", "e" * 16, 0)).is_dir() and any(f"{'e' * 16}.rank1" in call.args[1] for call in ssh.call_args_list))
+check("setup copies the file set to the peer's data root, not an image it already has", not save.called and rsync[-1] == f"bob@10.99.1.2:{peer_data}/models/paired/{'e' * 16}/")
+check("setup makes both ranks' state folders under the data roots", Path(local_data, "models", "paired", f"{'e' * 16}.rank0").is_dir()
+      and any(f"{peer_data}/models/paired/{'e' * 16}.rank1" in call.args[1] for call in ssh.call_args_list))
 check("the pair unit keeps the container restrictions", all(line in pair_text for line in ("ReadOnly=true", "DropCapability=all", "NoNewPrivileges=true", "AddDevice=/dev/infiniband")))
 if generator:
   quadlets = Path(a.quadlet_dir())
