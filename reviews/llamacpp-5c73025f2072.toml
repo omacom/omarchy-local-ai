@@ -1,0 +1,17 @@
+image = "ghcr.io/ggml-org/llama.cpp@sha256:5c73025f2072135ad37e306db9a57c685d8a349cfa5cb82b5c0f385b97567c94"
+publisher = "ggml-org (llama.cpp's own CI; image labels name https://github.com/ggml-org/llama.cpp at d3c3e242)"
+reviewer = "OpenCode agent (DeepSeek V4.1 Flash) for Piotr Cichowlas"
+date = "2026-11-18"
+version = "llama.cpp b12464, commit d3c3e242c16b8cbf51400fad410cd69b22d64f35, Vulkan backend, on Ubuntu 26.04"
+source = "open (MIT), https://github.com/ggml-org/llama.cpp; image https://github.com/ggml-org/llama.cpp/pkgs/container/llama.cpp"
+license_url = "https://raw.githubusercontent.com/ggml-org/llama.cpp/d3c3e242c16b8cbf51400fad410cd69b22d64f35/LICENSE"
+license_sha256 = "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+checked = [
+  "license: llama.cpp and ggml are MIT (the LICENSE at d3c3e242 hashes as above); the image's own base packages keep their notices under /usr/share/doc/<package>/copyright (Ubuntu 26.04)",
+  "build: the OCI labels name the source repository and the revision d3c3e242c16b8cbf51400fad410cd69b22d64f35 (version b12464); the pinned digest is the multi-platform index, whose linux/arm64 manifest holds the same build (the engine pulls arm64 on Apple Silicon); /app holds llama-server, libggml-vulkan.so and the CPU variants, and no weights",
+  "behavior: loads one GGUF model from the read-only /models path given as --model; it neither downloads nor writes weights, and its only writable path is /tmp",
+  "acceptance (2026-11-18): serves with a read-only root, a tmpfs at /tmp, all capabilities dropped, no-new-privileges and only the render node, on an Apple M1 Pro (Asahi, AGX through Vulkan); llama.cpp reports the model's layers on Vulkan0 and the CPU fallback only for flash attention over K/V rows, which it disables",
+  "acceptance (2026-11-18): rejects requests without the key (401) and serves them with it (200), listing the recipe alias on /v1/models; /health answers unauthenticated by design and is still the probe the engine uses",
+  "acceptance (2026-11-18): on a 32 GB M1 Pro the AGX Vulkan heap is 15.57 GiB, half of RAM, and weights and context share it: a 30B model in IQ4_XS (15.2 GiB) exhausted it while loading, an 8B model in Q6_K with a 32K-token context peaks at about 11 GiB, all layers on Vulkan0",
+  "acceptance (2026-11-18): stops on SIGTERM in about 0.2 s",
+]

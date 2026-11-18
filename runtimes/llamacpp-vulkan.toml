@@ -1,0 +1,28 @@
+# llama.cpp's llama-server (upstream ggml-org image, build b12464) with its Vulkan backend, for
+# GPUs reached through Vulkan alone: Apple Silicon's AGX on Asahi Linux has no ROCm or CUDA. The
+# image carries no weights; the model arrives read-only at /models. llama-server samples per
+# request, so a recipe's sampling defaults travel with the client, not as server arguments.
+# The image's entrypoint is /app/llama-server, so the command holds only its arguments.
+image = "ghcr.io/ggml-org/llama.cpp@sha256:5c73025f2072135ad37e306db9a57c685d8a349cfa5cb82b5c0f385b97567c94"
+tier = "third-party"
+review = "reviews/llamacpp-5c73025f2072.toml"
+port = 8080
+# The engine substitutes the key inside the container through bash, which replaces the image's
+# entrypoint, so the command names the binary itself.
+command = ["/app/llama-server", "--host", "0.0.0.0", "--port", "8080"]
+# Healthy once the weights are in memory: /health, asked with the key.
+health = { probe = ["/bin/sh", "-c", "curl -fsS -o /dev/null -H \"Authorization: Bearer $OMARCHY_LOCAL_KEY\" http://127.0.0.1:8080/health"] }
+# Vulkan on the render node only; it writes scratch files only under /tmp.
+run = { devices = ["render"], group_add = "keep-groups", tmpfs = "/tmp" }
+shell = "/bin/bash"
+# llama-server takes its key only as --api-key, substituted inside the container from the Podman
+# secret; the key never reaches the unit file but is visible in the process list.
+key_on_cmdline = true
+reserved = ["--host", "--port", "--api-key", "--api-key-file"]
+
+[inputs]
+model = { arg = "--model" }
+draft = { arg = "--model-draft" }
+ctx = { arg = "--ctx-size" }
+alias = { arg = "--alias" }
+key = { arg = "--api-key" }
