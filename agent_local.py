@@ -88,6 +88,12 @@ KINDS = ("text", "image", "video")
 # /v1/models that lists the recipe id, or stable-diffusion.cpp's model status reporting ready.
 APIS = ("openai", "sdcpp")
 GFX_FAMILIES = {"gfx1151": "amd-strix-halo", "gfx1150": "amd-strix-point"}
+# Apple Silicon's GPU on Asahi Linux: unified memory with no VRAM of its own, driven through
+# Vulkan on the render node. Its generation names the family (g13x is M1 Pro/Max/Ultra), since
+# each generation's GPU differs in throughput the way the AMD families do. The render node's
+# driver is `asahi` on most kernels and `aurora` on the Omarchy M kernel; the display engine
+# beside it is `apple-drm` and owns no render node.
+APPLE_GPU_DRIVERS = ("asahi", "aurora")
 # NVIDIA platforms whose GPU shares the system's memory. The N1x is the GB10's GPU in a
 # laptop: it keeps its own family name so a measurement records which machine it came from,
 # but it runs what a GB10 with the same memory runs.
@@ -271,6 +277,51 @@ def amd_gpus(kfd_root="/sys/class/kfd/kfd/topology/nodes", drm_root="/sys/class/
   return gpus
 
 
+def _kv_lines(path):
+  """The KEY=VALUE lines of a sysfs attribute such as a device's uevent."""
+  values = {}
+  for line in _read(path).splitlines():
+    key, sep, value = line.partition("=")
+    if sep and key:
+      values[key] = value
+  return values
+
+
+def apple_gpus(ram_gib, drm_root="/sys/class/drm"):
+  """Apple Silicon GPUs under Asahi, whose render node is driven by Vulkan. The GPU has no VRAM:
+  it addresses the system's memory through one heap of half of RAM (15.57 GiB of 31.14 on an M1
+  Pro), which no kernel parameter raises, so that is all a model and its context can fill."""
+  gpus = []
+  try:
+    entries = sorted(os.listdir(drm_root))
+  except OSError:
+    return gpus
+  for entry in entries:
+    if not re.fullmatch(r"renderD\d+", entry):
+      continue
+    device = os.path.join(drm_root, entry, "device")
+    props = _kv_lines(os.path.join(device, "uevent"))
+    if props.get("DRIVER") not in APPLE_GPU_DRIVERS:
+      continue
+    compatible = [props.get(f"OF_COMPATIBLE_{index}") for index in range(int(props.get("OF_COMPATIBLE_N", "0") or 0))]
+    # "apple,agx-g13x" is the GPU generation shared by one SoC family (M1 Pro/Max/Ultra);
+    # "apple,agx-t6000" names the one SoC, so the generation is preferred for the family.
+    suffixes = [name.split(",", 1)[1][4:] for name in compatible if name.startswith("apple,agx-")]
+    generation = next((suffix for suffix in suffixes if re.fullmatch(r"g\d+[a-z]?", suffix)), suffixes[0] if suffixes else "")
+    gpus.append({
+      "vendor": "apple",
+      "family": f"apple-{generation}" if generation else "apple-agx",
+      "gfx": generation,
+      "render_node": f"/dev/dri/{entry}",
+      "vram_gib": 0,
+      "gtt_gib": 0,
+      "unified": True,
+      "memory_gib": round(ram_gib / 2, 2),
+      "sysfs": "",
+    })
+  return gpus
+
+
 def gpu_memory_ceiling_gib(gpu, ram_gib):
   """The most memory this GPU can be given to address: a unified AMD GPU's cap can rise to all of
   RAM but the desktop's reserve, any other GPU has what it has."""
@@ -290,6 +341,8 @@ def pending_pages_limit():
 
 def gpu_memory_pending(variant, gpu):
   """Whether a raised cap waits for the next boot, and covers the variant once it applies."""
+  if gpu["vendor"] != "amd":
+    return False
   pending = pending_pages_limit()
   current = int(_read(TTM_PAGES_LIMIT, "0") or 0)
   return pending > current and gib(pending * os.sysconf("SC_PAGE_SIZE")) + gpu.get("vram_gib", 0) >= variant["peak_gpu_gib"]
@@ -343,6 +396,7 @@ def machine_profile():
   ram = gib(mem.get("MemTotal", 0))
   platform = platform_name()
   gpus = amd_gpus()
+  gpus += apple_gpus(ram)
   for gpu in gpus:
     gpu["max_memory_gib"] = gpu_memory_ceiling_gib(gpu, ram)
   if platform in NVIDIA_UNIFIED_FAMILIES:
@@ -1038,6 +1092,9 @@ def runtime_supports(runtime, gpu):
   devices = runtime.get("run", {}).get("devices", [])
   if gpu["vendor"] == "amd":
     return "cdi-nvidia" not in devices
+  if gpu["vendor"] == "apple":
+    # Vulkan on the render node is the only way to the GPU under Asahi.
+    return "render" in devices and "kfd" not in devices and "cdi-nvidia" not in devices
   if gpu["vendor"] == "nvidia":
     return "kfd" not in devices and "render" not in devices
   return False
@@ -2052,6 +2109,14 @@ def post_start_checks(rid, key, runtime=None):
     raise LocalError(f"Port {port_for(rid)} is serving {', '.join(map(str, ids)) or 'an unknown model'}, not {rid}")
 
 
+def gpu_used_gib(gpu, before_gpu, after_gpu):
+  """What the model holds on the GPU. An Apple GPU has no memory of its own: what it holds is the
+  RAM already counted, and no sysfs attribute reports it."""
+  if gpu["vendor"] == "apple":
+    return 0.0
+  return round(before_gpu - after_gpu, 1)
+
+
 def free_memory(gpu):
   mem = meminfo()
   available = gib(mem.get("MemAvailable", 0))
@@ -2059,6 +2124,9 @@ def free_memory(gpu):
   if gpu.get("sysfs"):
     used = int(_read(os.path.join(gpu["sysfs"], "mem_info_gtt_used"), "0") or 0) + int(_read(os.path.join(gpu["sysfs"], "mem_info_vram_used"), "0") or 0)
     gpu_free = gpu["memory_gib"] - gib(used)
+  elif gpu["vendor"] == "apple":
+    # An Apple GPU's heap is RAM, so what it has free is the free RAM, up to the heap's size.
+    gpu_free = min(available, gpu["memory_gib"])
   return available, gpu_free
 
 
@@ -3032,7 +3100,7 @@ def activate(manifest, recipe, runtime, gpu, key, catalog, profile):
   manifest["observed"] = {
     "load_seconds": round(load_seconds, 1),
     "ram_used_gib": ram_used_gib(manifest, before_ram, after_ram, before_peer, peer_free_gib(manifest)),
-    "gpu_used_gib": round(before_gpu - after_gpu, 1),
+    "gpu_used_gib": gpu_used_gib(gpu, before_gpu, after_gpu),
   }
 
 
@@ -3553,7 +3621,7 @@ def _start(args, catalog, profile):
   manifest["observed"] = {
     "load_seconds": round(time.time() - started, 1),
     "ram_used_gib": ram_used_gib(manifest, before_ram, after_ram, before_peer, peer_free_gib(manifest)),
-    "gpu_used_gib": round(before_gpu - after_gpu, 1),
+    "gpu_used_gib": gpu_used_gib(gpu, before_gpu, after_gpu),
   }
   write_atomic(model_manifest_path(rid), json.dumps(manifest, indent=2) + "\n")
   write_status(catalog, profile)

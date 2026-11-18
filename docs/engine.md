@@ -76,6 +76,27 @@ devices and scalar `network = "fabric"` for paired runtimes. Other run options a
 rejected. `validate <catalog-dir>` checks the records and referenced evidence;
 `--online` also checks upstream artifacts and licenses.
 
+### GPUs
+
+A machine's GPUs come from three places. AMD GPUs are read from KFD topology as
+`amd-strix-halo` or `amd-strix-point`. NVIDIA's unified chips are named by platform:
+`nvidia-gb10`, `nvidia-n1x`, and the `nvidia-gb10-pair` a cable makes of two of them.
+Apple Silicon under Asahi is `apple-<generation>` (`apple-g13x` is M1 Pro/Max/Ultra),
+taken from the GPU's device-tree compatible string so that each GPU generation, which
+differs in throughput the way AMD's families do, keeps its own measurements. Its render
+node is the one whose driver is `asahi` or, on the Omarchy M kernel, `aurora`; the
+display engine beside it owns no render node.
+
+The GPUs differ in what they can be given. An AMD GPU's VRAM and GTT are read from
+sysfs, and a unified one's cap can be raised towards the RAM above the desktop's
+reserve by a kernel parameter that applies at the next boot. An Apple GPU has no
+VRAM and no cap to raise: the Vulkan driver offers one heap of half of RAM
+(15.57 GiB of 31.14 on a 32 GB M1 Pro), weights and context share it, and what the
+engine reports as free is the free RAM within it. GPU memory observed in use comes
+from sysfs where there is an `amdgpu` one; on Apple, only RAM is observed. Vulkan is
+the only way to an Apple GPU, so its runtimes run with the `render` device alone;
+`kfd` and `cdi-nvidia` are used by AMD and NVIDIA runtimes.
+
 ## Lifecycle
 
 `use best` matches the GPU class and RAM class, tries the class's text recipes

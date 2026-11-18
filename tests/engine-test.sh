@@ -147,12 +147,44 @@ rival = dict(gpu, family="amd-other")
 tied = dict(profile, gpus=[gpu, rival])
 raises("different GPU families tied for memory require selection", lambda: a.choose_gpu(tied), "--gpu")
 check("explicit GPU resolves a memory tie", a.choose_gpu(tied, "amd-other") == rival)
-with patch.object(a, "platform_name", return_value="aarch64-n1x"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "meminfo", return_value={"MemTotal": 120 * 2**30}):
+with patch.object(a, "platform_name", return_value="aarch64-n1x"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "apple_gpus", return_value=[]), patch.object(a, "meminfo", return_value={"MemTotal": 120 * 2**30}):
   n1x = a.machine_profile()
 check("an N1x laptop has a unified NVIDIA GPU of its own family", n1x["ram_class"] == 128 and [(g["vendor"], g["family"], g["memory_gib"]) for g in n1x["gpus"]] == [("nvidia", "nvidia-n1x", 120)])
 spark = dict(recipe, hardware=[{"gpu": "nvidia-gb10", "ram_class": 128, "measured": "measurements/model.toml"}])
 check("an N1x runs what a GB10 with the same memory runs", a.qualified(spark, n1x, n1x["gpus"][0]) and a.match_class({"class": [dict(entry, gpu="nvidia-gb10", ram_class=128)]}, n1x, n1x["gpus"][0]) is not None)
 check("best treats the N1x and GB10 as one class", any("same selectors" in e for e in a.validate_best({"class": [dict(entry, gpu="nvidia-gb10", ram_class=128, recipes=["spark"]), dict(entry, gpu="nvidia-n1x", ram_class=128, recipes=["spark"])]}, {"spark": spark})))
+
+# Apple Silicon under Asahi: Vulkan on the render node, unified memory with no cap to raise.
+apple_root = Path(os.environ["HOME"]) / "drm-apple"
+(apple_root / "renderD128" / "device").mkdir(parents=True)
+(apple_root / "renderD128" / "device" / "uevent").write_text(
+  "DRIVER=asahi\nOF_NAME=gpu\nOF_COMPATIBLE_0=apple,agx-t6000\nOF_COMPATIBLE_1=apple,agx-g13x\nOF_COMPATIBLE_N=2\n")
+(apple_root / "renderD129" / "device").mkdir(parents=True)
+(apple_root / "renderD129" / "device" / "uevent").write_text("DRIVER=amdgpu\nOF_COMPATIBLE_N=0\n")
+(apple_root / "renderD130" / "device").mkdir(parents=True)
+(apple_root / "renderD130" / "device" / "uevent").write_text("DRIVER=aurora\nOF_COMPATIBLE_0=apple,agx-t6000\nOF_COMPATIBLE_1=apple,agx-g13x\nOF_COMPATIBLE_N=2\n")
+apple = a.apple_gpus(32.0, drm_root=str(apple_root))
+check("an Asahi or aurora render node is an Apple GPU of the generation its SoC shares",
+      [(g["vendor"], g["family"], g["render_node"]) for g in apple] ==
+      [("apple", "apple-g13x", "/dev/dri/renderD128"), ("apple", "apple-g13x", "/dev/dri/renderD130")],
+      str(apple))
+check("an Apple GPU addresses half of RAM, its one Vulkan heap", apple[0]["memory_gib"] == 16 and apple[0]["unified"] and apple[0]["sysfs"] == "")
+with patch.object(a, "platform_name", return_value="aarch64-apple"), patch.object(a, "amd_gpus", return_value=[]), \
+     patch.object(a, "apple_gpus", return_value=apple), patch.object(a, "meminfo", return_value={"MemTotal": 32 * 2**30}):
+  mac = a.machine_profile()
+check("the Apple GPU is the machine's GPU, not 'no supported GPU'", a.choose_gpu(mac)["family"] == "apple-g13x" and mac["ram_class"] == 32)
+vulkan = dict(runtime, run={"devices": ["render"]}, inputs=dict(runtime["inputs"], key={"arg": "--api-key"}))
+check("a Vulkan runtime runs on the Apple GPU", a.runtime_supports(vulkan, apple[0]))
+check("ROCm and CUDA runtimes don't run on the Apple GPU",
+      not a.runtime_supports(dict(vulkan, run={"devices": ["render", "kfd"]}), apple[0]) and
+      not a.runtime_supports(dict(vulkan, run={"devices": ["cdi-nvidia"]}), apple[0]))
+check("no GPU memory cap waits for a reboot on Apple", not a.gpu_memory_pending(dict(variant, peak_gpu_gib=20), apple[0]))
+with patch.object(a, "meminfo", return_value={"MemTotal": 32 * 2**30, "MemAvailable": 20 * 2**30}):
+  check("an Apple GPU's free memory is the RAM free, within its heap", a.free_memory(apple[0])[1] == 16)
+check("an Apple GPU holds no GPU memory of its own", a.gpu_used_gib(apple[0], 20, 8) == 0 and a.gpu_used_gib({"vendor": "amd"}, 20, 8) == 12)
+check("an Apple model fits by the RAM it may address and doesn't past it",
+      a.fits({"ctx": 40960, "peak_ram_gib": 13, "peak_gpu_gib": 13}, mac, apple[0])[0] and
+      not a.fits({"ctx": 40960, "peak_ram_gib": 21, "peak_gpu_gib": 17}, mac, apple[0])[0])
 check("GPU peak exceeding capacity does not fit", not a.fits(dict(variant, peak_gpu_gib=49), profile, gpu)[0])
 check("RAM fit preserves desktop reserve", not a.fits(dict(variant, peak_ram_gib=57), profile, gpu)[0])
 with patch.object(a, "free_memory", return_value=(1, 1)), patch.object(a, "top_memory_users", return_value="browser (12 GiB), editor (4 GiB)"), patch.object(a.time, "sleep"):
@@ -166,7 +198,7 @@ with patch.object(a, "free_memory", return_value=(48.6, 54)), patch.object(a, "c
 
 # A 64 GB Strix Halo on a stock kernel: the GPU maps half of RAM until use raises the cap.
 halo = {"vendor": "amd", "family": "amd-strix-halo", "memory_gib": 31.6, "unified": True}
-with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[dict(halo)]), patch.object(a, "meminfo", return_value={"MemTotal": 62 * 2**30}):
+with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[dict(halo)]), patch.object(a, "apple_gpus", return_value=[]), patch.object(a, "meminfo", return_value={"MemTotal": 62 * 2**30}):
   halo = a.machine_profile()["gpus"][0]
 needs_more = dict(variant, peak_gpu_gib=38, peak_ram_gib=38)
 check("a unified AMD GPU fits by the cap use can raise it to", halo["max_memory_gib"] == 54 and a.fits(needs_more, profile, halo)[0])
@@ -487,7 +519,7 @@ for name in ("c" * 16, "c" * 16 + ".rank0", "d" * 16, "d" * 16 + ".rank0"):
   (base / name).mkdir(parents=True)
 a.prune_filesets("keep", "c" * 16)
 check("pruning keeps a file set's rank inputs and drops the others'", sorted(p.name for p in base.iterdir()) == ["c" * 16, "c" * 16 + ".rank0"])
-with patch.object(a, "platform_name", return_value="aarch64-gb10"), patch.object(a, "amd_gpus", side_effect=lambda: []):
+with patch.object(a, "platform_name", return_value="aarch64-gb10"), patch.object(a, "amd_gpus", side_effect=lambda: []), patch.object(a, "apple_gpus", side_effect=lambda *_, **__: []):
   check("no pair without a record of one", "pair" not in a.machine_profile())
   Path(a.pair_path()).parent.mkdir(parents=True, exist_ok=True)
   Path(a.pair_path()).write_text(json.dumps({"peer": "10.99.0.2", "host": "spark2", "home": "/home/u", "ram_gib": 121.9}))

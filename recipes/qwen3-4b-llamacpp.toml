@@ -1,0 +1,36 @@
+# Alibaba's Qwen3 4B, the light recipe for Apple Silicon: its Q8 KV cache keeps the 32K-token
+# window at a third of the heap an 8B model's would take, so the desktop keeps the rest of the
+# 15.57 GiB an M1 Pro's GPU shares with it. Q6_K weights: about 3 GiB.
+name = "Qwen3 4B"
+runtime = "llamacpp-vulkan"
+vendor = "qwen"
+architecture = "dense"
+
+[[hardware]]
+gpu = "apple-g13x"
+ram_class = 32
+measured = "measurements/qwen3-4b-llamacpp-apple-g13x-32.toml"
+
+[[artifacts]]
+repo = "unsloth/Qwen3-4B-GGUF"
+revision = "22c9fc8a8c7700b76a1789366280a6a5a1ad1120"
+license = "apache-2.0"
+files = ["Qwen3-4B-Q6_K.gguf"]
+model = "Qwen3-4B-Q6_K.gguf"
+
+# Measured: 6.1 GiB at load, about 7 GiB in the heap. Short prompts decode at 15.8 tok/s and a
+# 2K-token edit at 12.2; a 30K-token prompt still prefills at 22.1 tok/s and then decodes at
+# 3.2, because AGX has no flash attention here and attention grows with the window.
+[[variant]]
+ctx = 32768
+peak_ram_gib = 7
+peak_gpu_gib = 7
+args = ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+
+[sampling]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+
+[server]
+args = []
