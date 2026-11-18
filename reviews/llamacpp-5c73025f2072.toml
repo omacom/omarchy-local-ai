@@ -13,6 +13,6 @@ checked = [
   "acceptance (2026-11-18): serves with a read-only root, a tmpfs at /tmp, all capabilities dropped, no-new-privileges and only the render node, on an Apple M1 Pro (Asahi, AGX through Vulkan); llama.cpp reports the model's layers on Vulkan0 and the CPU fallback only for flash attention over K/V rows, which it disables",
   "acceptance (2026-11-18): the key arrives as LLAMA_API_KEY in its environment, so it never shows in the process list; without it requests get 401 and with it 200, listing the recipe alias on /v1/models; --no-webui removes the web UI and /health stays public, carrying no data",
   "acceptance (2026-11-18): on a 32 GB M1 Pro the AGX Vulkan heap is 15.57 GiB, half of RAM, and weights and context share it: a 30B model in IQ4_XS (15.2 GiB) exhausted it while loading, an 8B model in Q6_K with a 32K-token context peaks at about 11 GiB, all layers on Vulkan0",
-  "acceptance (2026-11-18): --load-mode none reads the weights whole into GPU memory, --parallel 1 keeps one slot, and a Q8_0 K/V cache works on AGX (a short generation completes with it)",
+  "acceptance (2026-11-18): --load-mode none reads the weights whole into GPU memory, and a Q8_0 K/V cache works on AGX (a short generation completes with it); each slot keeps its own cached prefix, so an unrelated request no longer evicts a session's 6K-token prompt (a repeat of it answers in 0.11 s)",
   "acceptance (2026-11-18): stops on SIGTERM in about 0.2 s",
 ]
