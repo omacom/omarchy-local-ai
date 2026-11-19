@@ -4,7 +4,7 @@
 # It lists itself as sd-cpp-local rather than the recipe, so the engine checks it is ready by its
 # model status (api = "sdcpp") instead of /v1/models. Generation defaults (steps, CFG scale) are
 # the model's, set in each recipe's server args.
-image = "ghcr.io/omacom/sdcpp@sha256:f8f635b6afa594b7243916f6e0cf7f798e1fed838899edea093af3f2772bf37e"
+image = "ghcr.io/omacom/omarchy-local-ai/sdcpp@sha256:f8f635b6afa594b7243916f6e0cf7f798e1fed838899edea093af3f2772bf37e"
 tier = "third-party"
 review = "reviews/sdcpp-f8f635b6afa5.toml"
 api = "sdcpp"

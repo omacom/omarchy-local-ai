@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/acestep@sha256:cedcf4768ee0e4dce0751e3a5641bc083fd85ee6100a09b9be2e18875dc75220"
+image = "ghcr.io/omacom/omarchy-local-ai/acestep@sha256:cedcf4768ee0e4dce0751e3a5641bc083fd85ee6100a09b9be2e18875dc75220"
 publisher = "Omacom (built from omacom/acestep-image: ServeurpersoCom/acestep.cpp 973517be with one patch)"
 reviewer = "Claude Code for David Heinemeier Hansson"
 date = "2026-11-18"

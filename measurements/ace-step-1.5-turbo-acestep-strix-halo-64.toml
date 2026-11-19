@@ -1,6 +1,6 @@
 recipe = "ace-step-1.5-turbo-acestep"
 measured_at = "2026-11-18"
-image = "ghcr.io/omacom/acestep@sha256:cedcf4768ee0e4dce0751e3a5641bc083fd85ee6100a09b9be2e18875dc75220"
+image = "ghcr.io/omacom/omarchy-local-ai/acestep@sha256:cedcf4768ee0e4dce0751e3a5641bc083fd85ee6100a09b9be2e18875dc75220"
 load_seconds = 0.7
 fileset = "75ca030f848772d4"
 method = "a 60 s and a 180 s song with given lyrics through /lm then /synth on the engine-run server, the turbo model's own 8 steps, to 128 kbit/s MP3; GPU memory from the GTT counter over its level before, every half second"

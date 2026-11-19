@@ -1,6 +1,6 @@
 recipe = "minimax-h3-sdcpp-cuda"
 measured_at = "2026-11-18"
-image = "ghcr.io/omacom/sdcpp-cuda@sha256:0571b9ddbb8ad78fddb0bc6909eb4ddd7f3d4c1d23828c14309bbf9f1783ef7d"
+image = "ghcr.io/omacom/omarchy-local-ai/sdcpp-cuda@sha256:0571b9ddbb8ad78fddb0bc6909eb4ddd7f3d4c1d23828c14309bbf9f1783ef7d"
 load_seconds = 4.0
 fileset = "840a2240ff853392"
 method = "three 864x480, 56-frame (2.3 s at 24 fps) clips with sound through /sdcpp/v1/vid_gen on the engine-run server, at its default 4 steps with the turbo LoRA it lists, VAE tiling on, the median kept; GPU memory from nvidia-smi's count for the server's process, every half second"

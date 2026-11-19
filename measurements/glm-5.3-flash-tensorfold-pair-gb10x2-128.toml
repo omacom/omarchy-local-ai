@@ -1,7 +1,7 @@
 recipe = "glm-5.3-flash-tensorfold-pair"
 measured_at = "2026-11-10"
 catalog_version = "0.5.0"
-image = "ghcr.io/omacom/tensorfold-glm53@sha256:9dc2390963742a04d43196692ed80529e9ecca919fbc5160fd85f62597845b8b"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-glm53@sha256:9dc2390963742a04d43196692ed80529e9ecca919fbc5160fd85f62597845b8b"
 ctx = 262144
 load_seconds = 100.0
 fileset = "20d67758e044198f"

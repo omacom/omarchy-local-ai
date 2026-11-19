@@ -8,7 +8,7 @@
 # take the N1x's load from 45 seconds to 27 minutes. That fix is offered upstream. It also counts the
 # host's reclaimable memory as free when a sequence grows, which CUDA reports as used on these GPUs:
 # without it a 64 GB machine refused every request past 4,096 tokens once the page cache had filled.
-image = "ghcr.io/omacom/tensorfold-nemotron-bolt@sha256:cae70d9ade0dd6f762d86b1fe5cb84e8a66cbb881d886a96b76bf89e81f3bc3a"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-nemotron-bolt@sha256:cae70d9ade0dd6f762d86b1fe5cb84e8a66cbb881d886a96b76bf89e81f3bc3a"
 tier = "third-party"
 review = "reviews/tensorfold-bolt-cae70d9ade0d.toml"
 port = 8888

@@ -4,7 +4,7 @@
 # tf-dsv41-lanes on the paired machine. They rendezvous over the ConnectX-7 cable (TCP on master_port) and exchange a
 # decode round's activations over RoCE on both rails. Settings are MiaAI-Lab's start.sh defaults but for
 # the engine's reserve.
-image = "ghcr.io/omacom/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
 tier = "third-party"
 review = "reviews/tensorfold-dsv41-5692a64c3008.toml"
 port = 8888

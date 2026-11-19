@@ -1,0 +1,40 @@
+recipe = "flux2-klein-4b-sdcpp"
+measured_at = "2026-11-19"
+image = "localhost/omacom-sdcpp@sha256:17a60aa679b324c943060dbb8f551dafcc2251f3f5062968b94898946b5c01b3"
+load_seconds = 7.0
+fileset = "004c5cd45fc1b6f0"
+method = "tools/bench: 1 warmup, then 3 1024x1024 images through /v1/images/generations at the recipe's default steps, the median kept"
+
+[machine]
+platform = "x86"
+gpu = "intel-arc-b390"
+ram_class = 64
+system = "Dell Inc. XPS 14 DA14260"
+kernel = "7.2.15-2-omarchy"
+cpu = "Intel(R) Core(TM) Ultra X7 358H"
+
+[memory]
+observed_at_load_gib = 2.2
+min_available_during_bench_gib = 32.8
+total_gib = 62.3
+peak_gpu_gib = 14.0
+
+[generation]
+width = 1024
+height = 1024
+steps = 4
+images = 3
+first_image_s = 58.22
+seconds_per_image = 37.48
+
+[[artifacts]]
+repo = "leejet/FLUX.2-klein-4B-GGUF"
+revision = "3b1f5a9dc3abb32238b053aeb3d823c30afdacbd"
+
+[[artifacts]]
+repo = "unsloth/Qwen3-4B-GGUF"
+revision = "22c9fc8a8c7700b76a1789366280a6a5a1ad1120"
+
+[[artifacts]]
+repo = "Comfy-Org/flux2-klein-4B"
+revision = "5b3abca5c0dc1ecd4eaf3340868d09063fc1c965"

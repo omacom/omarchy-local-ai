@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/tensorfold-glm53@sha256:9dc2390963742a04d43196692ed80529e9ecca919fbc5160fd85f62597845b8b"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-glm53@sha256:9dc2390963742a04d43196692ed80529e9ecca919fbc5160fd85f62597845b8b"
 publisher = "Omacom (built from omacom/tensorfold-glm53-image: upstream TensorFold with MiaAI-Lab's GLM-5.3-Flash-DGX-Sparks-1104 patches)"
 reviewer = "Claude Code for David Heinemeier Hansson"
 date = "2026-11-09"

@@ -1,0 +1,40 @@
+recipe = "z-image-turbo-sdcpp"
+measured_at = "2026-11-19"
+image = "localhost/omacom-sdcpp@sha256:17a60aa679b324c943060dbb8f551dafcc2251f3f5062968b94898946b5c01b3"
+load_seconds = 3.0
+fileset = "ca00cabcb0fee841"
+method = "tools/bench: 1 warmup, then 3 1024x1024 images through /v1/images/generations at the recipe's default steps, the median kept"
+
+[machine]
+platform = "x86"
+gpu = "intel-arc-b390"
+ram_class = 64
+system = "Dell Inc. XPS 14 DA14260"
+kernel = "7.2.15-2-omarchy"
+cpu = "Intel(R) Core(TM) Ultra X7 358H"
+
+[memory]
+observed_at_load_gib = 0.2
+min_available_during_bench_gib = 31.7
+total_gib = 62.3
+peak_gpu_gib = 19.1
+
+[generation]
+width = 1024
+height = 1024
+steps = 8
+images = 3
+first_image_s = 85.37
+seconds_per_image = 82.42
+
+[[artifacts]]
+repo = "leejet/Z-Image-Turbo-GGUF"
+revision = "c61c0e422dc8b541b7548cf33a4ef8302b0f8085"
+
+[[artifacts]]
+repo = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
+revision = "a06e946bb6b655725eafa393f4a9745d460374c9"
+
+[[artifacts]]
+repo = "Comfy-Org/Z-Image-Turbo"
+revision = "6fc90a3b1b653e935a0d175e260736de25b84df5"

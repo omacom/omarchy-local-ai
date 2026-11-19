@@ -1,6 +1,6 @@
 recipe = "flux2-klein-4b-sdcpp-cuda"
 measured_at = "2026-11-18"
-image = "ghcr.io/omacom/sdcpp-cuda@sha256:0571b9ddbb8ad78fddb0bc6909eb4ddd7f3d4c1d23828c14309bbf9f1783ef7d"
+image = "ghcr.io/omacom/omarchy-local-ai/sdcpp-cuda@sha256:0571b9ddbb8ad78fddb0bc6909eb4ddd7f3d4c1d23828c14309bbf9f1783ef7d"
 load_seconds = 4.0
 fileset = "004c5cd45fc1b6f0"
 method = "tools/bench: 1 warmup, then 3 1024x1024 images through /v1/images/generations at the recipe's default steps, the median kept"

@@ -1,6 +1,6 @@
 recipe = "deepseek-v4.1-flash-tensorfold-pair"
 measured_at = "2026-11-19"
-image = "ghcr.io/omacom/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
 ctx = 1048576
 load_seconds = 36.9
 fileset = "41f0fcd498a66ef8"

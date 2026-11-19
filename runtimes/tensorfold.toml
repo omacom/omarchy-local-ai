@@ -6,7 +6,7 @@
 # TENSORFOLD_API_KEY. The image sets TENSORFOLD_MEMORY_RESERVE_GIB=9 (12.2 by default), which gives the
 # difference to the prompt cache, and TF_FLASHNEXT_CHUNK_SOLO=3072, which only Flash Next reads.
 # Published by Omacom from images/tensorfold.
-image = "ghcr.io/omacom/tensorfold@sha256:795038783aaf902bcd8b377f73beae8224e75a83e7dbcdb783521ef46bf25aa2"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold@sha256:795038783aaf902bcd8b377f73beae8224e75a83e7dbcdb783521ef46bf25aa2"
 tier = "third-party"
 review = "reviews/tensorfold-795038783aaf.toml"
 port = 8888

@@ -1,6 +1,6 @@
 recipe = "z-image-turbo-sdcpp"
 measured_at = "2026-11-18"
-image = "ghcr.io/omacom/sdcpp@sha256:f8f635b6afa594b7243916f6e0cf7f798e1fed838899edea093af3f2772bf37e"
+image = "ghcr.io/omacom/omarchy-local-ai/sdcpp@sha256:f8f635b6afa594b7243916f6e0cf7f798e1fed838899edea093af3f2772bf37e"
 load_seconds = 3.0
 fileset = "ca00cabcb0fee841"
 method = "tools/bench: 1 warmup, then 3 1024x1024 images through /v1/images/generations at the recipe's default steps, the median kept"

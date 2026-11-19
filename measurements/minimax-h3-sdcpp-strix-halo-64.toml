@@ -1,6 +1,6 @@
 recipe = "minimax-h3-sdcpp"
 measured_at = "2026-11-18"
-image = "ghcr.io/omacom/sdcpp@sha256:f8f635b6afa594b7243916f6e0cf7f798e1fed838899edea093af3f2772bf37e"
+image = "ghcr.io/omacom/omarchy-local-ai/sdcpp@sha256:f8f635b6afa594b7243916f6e0cf7f798e1fed838899edea093af3f2772bf37e"
 load_seconds = 4.0
 fileset = "74f340a66930dc5c"
 method = "one 864x480, 56-frame (2.3 s at 24 fps) clip with sound through /sdcpp/v1/vid_gen on the engine-run server, at its default 4 steps with the turbo LoRA it lists, VAE tiling on; GPU memory from the GTT counter, every half second"

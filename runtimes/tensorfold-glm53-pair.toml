@@ -4,7 +4,7 @@
 # rendezvous through NCCL_COMM_ID over the ConnectX-7 cable and all-gather over RoCE on both rails. Their startup
 # fingerprints compare the serve arguments, so rank 1 gets exactly rank 0's (no [pair] worker command). Settings are
 # MiaAI-Lab's config.sh defaults.
-image = "ghcr.io/omacom/tensorfold-glm53@sha256:9dc2390963742a04d43196692ed80529e9ecca919fbc5160fd85f62597845b8b"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-glm53@sha256:9dc2390963742a04d43196692ed80529e9ecca919fbc5160fd85f62597845b8b"
 tier = "third-party"
 review = "reviews/tensorfold-glm53-9dc239096374.toml"
 port = 8888

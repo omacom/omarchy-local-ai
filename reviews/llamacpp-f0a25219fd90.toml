@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/llamacpp@sha256:f0a25219fd9066ec8b44ba781a6450e9e9133384790f320c5309aa49af9c6982"
+image = "ghcr.io/omacom/omarchy-local-ai/llamacpp@sha256:f0a25219fd9066ec8b44ba781a6450e9e9133384790f320c5309aa49af9c6982"
 publisher = "Omacom (built from omacom/llamacpp-image: ggml-org/llama.cpp b12521 with no patches)"
 reviewer = "Claude Code for David Heinemeier Hansson"
 date = "2026-11-19"

@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-dsv41@sha256:5692a64c30086d58e95c4738b2c03a3fa9786a19f7f63905912347029b01b636"
 publisher = "Omacom (built from omacom/tensorfold-dsv41-image: BertholomusAI's TensorFold fork with MiaAI-Lab's DeepSeek-V4.1-Flash pair recipe)"
 reviewer = "Claude Code for David Heinemeier Hansson"
 date = "2026-11-09"

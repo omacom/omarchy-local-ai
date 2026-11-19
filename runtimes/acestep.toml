@@ -3,7 +3,7 @@
 # Vulkan on the render node only, no ROCm. It takes the folder holding its models, loads one only
 # when asked for a song and frees it after, so it holds no GPU memory between songs and is checked
 # by the models it found (api = "acestep") instead of /v1/models.
-image = "ghcr.io/omacom/acestep@sha256:cedcf4768ee0e4dce0751e3a5641bc083fd85ee6100a09b9be2e18875dc75220"
+image = "ghcr.io/omacom/omarchy-local-ai/acestep@sha256:cedcf4768ee0e4dce0751e3a5641bc083fd85ee6100a09b9be2e18875dc75220"
 tier = "third-party"
 review = "reviews/acestep-cedcf4768ee0.toml"
 api = "acestep"

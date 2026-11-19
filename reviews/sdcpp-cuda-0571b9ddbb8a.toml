@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/sdcpp-cuda@sha256:0571b9ddbb8ad78fddb0bc6909eb4ddd7f3d4c1d23828c14309bbf9f1783ef7d"
+image = "ghcr.io/omacom/omarchy-local-ai/sdcpp-cuda@sha256:0571b9ddbb8ad78fddb0bc6909eb4ddd7f3d4c1d23828c14309bbf9f1783ef7d"
 publisher = "Omacom (built from omacom/sdcpp-image's Containerfile.cuda: leejet/stable-diffusion.cpp 532d2c15 with two patches open upstream)"
 reviewer = "Claude Code for David Heinemeier Hansson"
 date = "2026-11-18"

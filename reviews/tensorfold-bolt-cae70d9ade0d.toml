@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/tensorfold-nemotron-bolt@sha256:cae70d9ade0dd6f762d86b1fe5cb84e8a66cbb881d886a96b76bf89e81f3bc3a"
+image = "ghcr.io/omacom/omarchy-local-ai/tensorfold-nemotron-bolt@sha256:cae70d9ade0dd6f762d86b1fe5cb84e8a66cbb881d886a96b76bf89e81f3bc3a"
 publisher = "Omacom (built from omacom/tensorfold-nemotron-bolt, a fork of MiaAI-Lab/Nemotron-3.5-Bolt-TensorFold-DGX-Spark)"
 reviewer = "Claude Code for David Heinemeier Hansson"
 date = "2026-11-09"
