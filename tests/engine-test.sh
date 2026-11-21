@@ -396,13 +396,17 @@ cdi_rt = {"run": {"devices": ["cdi-nvidia"]}}
 check("a discrete GPU's container gets only that card", a.device_lines(cdi_rt, found[1]) == ["AddDevice=nvidia.com/gpu=1"])
 check("a unified GPU's container gets the whole device", a.device_lines(cdi_rt, {"vendor": "nvidia", "family": "nvidia-gb10", "unified": True}) == ["AddDevice=nvidia.com/gpu=all"])
 check("VRAM rounds up to its class (23.99 GiB is 24, 200 caps at 96)", a.vram_class(24) == 24 and a.vram_class(23.99) == 24 and a.vram_class(11) == 12 and a.vram_class(200) == 96)
+check("a 10 GB card gets its own VRAM class", a.vram_class(10) == 10 and a.vram_class(9.7) == 10 and a.vram_class(10.1) == 12)
+check("an RTX 3080 is named from nvidia-smi", a.nvidia_gpus("NVIDIA GeForce RTX 3080, 10240\n")[0]["vram_class"] == 10)
 vgpu, rgpu = found[0], {"vendor": "nvidia", "family": "nvidia-gb10", "unified": True, "memory_gib": 120}
 vprof = {"platform": "x86", "ram_class": 96, "ram_gib": 78, "gpus": [vgpu]}
 check("a discrete GPU is matched on VRAM, a unified one on RAM", a.memory_class(vprof, vgpu) == 24 and a.memory_class(vprof, rgpu) == 96)
-vrecipe = {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}
-check("a recipe measured at 24 GB VRAM qualifies on a 3090 whatever the RAM", a.qualified(vrecipe, vprof, vgpu) and a.qualified(vrecipe, dict(vprof, ram_class=32), vgpu))
-check("a recipe measured at 16 GB VRAM doesn't qualify on a 24 GB card", not a.qualified({"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 16}]}, vprof, vgpu))
-check("a RAM-class entry doesn't qualify a discrete GPU", not a.qualified({"hardware": [{"gpu": "nvidia-rtx3090", "ram_class": 96}]}, vprof, vgpu))
+qbest = {"class": [{"gpu": "nvidia-rtx3090", "vram_class": 24, "recipes": ["model"]}]}
+def best_matches(hw):
+  return a.validate_best(qbest, {"model": {"hardware": hw}}) == []
+check("a recipe measured at 24 GB VRAM qualifies on a 3090 whatever the RAM", best_matches([{"gpu": "nvidia-rtx3090", "vram_class": 24}]))
+check("a recipe measured at 16 GB VRAM doesn't qualify on a 24 GB card", not best_matches([{"gpu": "nvidia-rtx3090", "vram_class": 16}]))
+check("a RAM-class entry doesn't qualify a discrete GPU", not best_matches([{"gpu": "nvidia-rtx3090", "ram_class": 96}]))
 check("a hardware entry with both classes is refused", bool(a.class_errors({"gpu": "x", "ram_class": 64, "vram_class": 24}, "w")))
 check("a hardware entry with no class is refused", bool(a.class_errors({"gpu": "x"}, "w")))
 check("a hardware entry with a vram_class is accepted", not a.class_errors({"gpu": "x", "vram_class": 24}, "w"))
@@ -411,11 +415,14 @@ check("a ram_class outside its list is refused", bool(a.class_errors({"ram_class
 vbest = {"class": [{"gpu": "nvidia-rtx3090", "vram_class": 24, "recipes": ["model"]}]}
 check("best.toml matches a discrete GPU on VRAM", a.match_class(vbest, vprof, vgpu) is vbest["class"][0] and a.match_class(vbest, vprof, rgpu) is None)
 check("best.toml accepts a vram_class", not a.validate_best(vbest, {"model": {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}}))
-check("best.toml refuses an entry with both classes", bool(a.validate_best({"class": [dict(vbest["class"][0], ram_class=64)]}, {"model": vrecipe})))
+check("best.toml refuses an entry with both classes", bool(a.validate_best({"class": [dict(vbest["class"][0], ram_class=64)]}, {"model": {"hardware": [{"gpu": "nvidia-rtx3090", "vram_class": 24}]}})))
 real = a.load_catalog()
 rtx = dict(found[0])
 rprof = {"platform": "x86", "ram_class": 96, "ram_gib": 78, "gpus": [rtx]}
 check("best on a 3090 is the Lightning recipe", a.resolve_best(real, rprof, rtx)[0] == "nemotron-3.5-lightning-tensorfold")
+rtx3080 = dict(a.nvidia_gpus("NVIDIA GeForce RTX 3080, 10240\n")[0])
+p3080 = {"platform": "x86", "ram_class": 32, "ram_gib": 31, "gpus": [rtx3080]}
+check("best on a 10 GB 3080 is the 2B TensorFold recipe", a.resolve_best(real, p3080, rtx3080)[0] == "qwen3.5-2b-tensorfold")
 positional_rt = copy.deepcopy(runtime)
 positional_rt["command"] = ["server", "serve"]
 positional_rt["inputs"]["model"] = {"positional": True}

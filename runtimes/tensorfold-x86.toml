@@ -6,6 +6,7 @@
 # TENSORFOLD_MEMORY_RESERVE_GIB: that tunes the Spark's unified memory, not a card's VRAM.
 image = "ghcr.io/bmaltais/tensorfold-x86@sha256:bc27ae10fd58e139dc1529eddc8c0af8961cdbd6e664f86485e5f5ccdc9aaf96"
 tier = "third-party"
+gpus = ["nvidia"]
 review = "reviews/tensorfold-x86-bc27ae10fd58.toml"
 port = 8888
 command = ["tensorfold-native", "serve", "--host", "0.0.0.0", "--port", "8888", "--no-update-check"]

@@ -81,7 +81,7 @@ fi
 RAM_CLASSES = (32, 64, 96, 128, 192, 256, 512)
 # A discrete GPU is classed by its own VRAM (`vram_class`), not by the system's RAM: the RAM
 # only has to hold the host side (`peak_ram_gib`, checked beside it). Unified-memory GPUs keep `ram_class`.
-VRAM_CLASSES = (8, 12, 16, 24, 32, 48, 80, 96)
+VRAM_CLASSES = (8, 10, 12, 16, 24, 32, 48, 80, 96)
 STANDARD_INPUTS = ("model", "draft", "text_encoder", "vae", "audio_vae", "lora", "ctx", "alias", "key", "temperature", "top_p", "top_k")
 # The files a recipe's artifacts can name, each reaching the server through the runtime input of
 # the same name: the model, and a draft for speculative decoding (text) or the text encoder and

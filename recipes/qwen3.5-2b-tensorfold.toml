@@ -9,6 +9,14 @@ gpu = "nvidia-rtx3090"
 vram_class = 24
 measured = "measurements/qwen3.5-2b-tensorfold-rtx3090-24.toml"
 
+# The 10 GB class (RTX 3080, RTX A2000 10 GB): the same variant peaks at 8.2 GiB of VRAM, leaving
+# room for the desktop. DRAFT: the numbers in the measurement below are carried over from the 3090
+# run and must be replaced with a `tools/bench` run on a 10 GB card before merging.
+[[hardware]]
+gpu = "nvidia-rtx3080"
+vram_class = 10
+measured = "measurements/qwen3.5-2b-tensorfold-rtx3080-10.toml"
+
 # mlx-community's MLX affine 4-bit, group-64 export. The server loads the directory; the vision tower isn't loaded.
 [[artifacts]]
 repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
