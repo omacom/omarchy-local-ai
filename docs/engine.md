@@ -54,7 +54,7 @@ The real records are the examples and source of values:
 | [runtimes/](../runtimes/) | Digest-pinned image, `gpus` (the vendors, `amd`, `intel` or `nvidia`, or the GPU classes such as `amd-strix-halo` its image works on, each reachable through its devices), tier, port, command, standard input mappings, reserved options, nonempty `health.probe` argv and `api` (`openai`, the default, `sdcpp` or `acestep`), which selects the post-start check; an `openai` runtime must map `alias`. A paired runtime adds `listen` (its bind flags), `@PORT@` in its probe and a `[pair]` table: `nodes = 2`, `master_port`, optional `prepare` and `worker` commands (without one, rank 1 runs the head's own invocation, for servers that compare the ranks' arguments), an optional served `model` under `/prepared`, an optional `state` path where each rank's folder is mounted writable for the server's caches (else read-only at `/prepared`), and `env`, `head_env` and `worker_env` (any names but the link's `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA` and `NCCL_IB_GID_INDEX`, which the engine sets), whose values may hold `@RANK@`, `@WORLD@`, `@MASTER_ADDR@`, `@MASTER_PORT@`, `@CTX@`, `@RDMA_DEVICES@`, `@GID_INDEX@` and `@SOCKET_IFNAME@`. |
 | [reviews/](../reviews/) | Third-party image digest, publisher, reviewer, date, license URL/hash and checked properties. |
 | [measurements/](../measurements/) | Speed and memory on one machine class, the evidence `best.toml` recommends by, artifact identities, context, memory, load time and short, long and code-edit prompt timings; for an image model, seconds per image at a size and step count instead. |
-| [best.toml](../best.toml) | Unique classes requiring both `gpu` and `ram_class`, with an ordered list of measured text recipes (`recipes`) and optionally of measured image models (`images`), each holding only its kind. |
+| [best.toml](../best.toml) | Unique classes requiring `gpu` and exactly one of `ram_class` and `vram_class`, with an ordered list of measured text recipes (`recipes`) and optionally of measured image models (`images`), each holding only its kind. |
 
 IDs contain lowercase alphanumeric components separated by single dots or hyphens.
 Artifact repositories are `owner/name`, revisions are 40-hex commits, and files,
@@ -80,9 +80,10 @@ rejected. `validate <catalog-dir>` checks the records and referenced evidence;
 
 ## Lifecycle
 
-`use best <kind>` (`text`, `image`, `video` or `music`) matches the GPU class and RAM class, tries the
-class's recipes of that kind (`recipes` for text, else `images`, `videos` or `music` in `best.toml`)
-in order; `use best` alone lists each kind's pick for this machine and sets nothing up. It checks that the runtime runs on the GPU and that the recipe fits, and
+`use best <kind>` (`text`, `image`, `video` or `music`) matches the GPU class and memory class (VRAM
+for a discrete card, otherwise the machine's RAM), tries the class's recipes of that kind
+(`recipes` for text, else `images`, `videos` or `music` in `best.toml`) in order; `use best` alone
+lists each kind's pick for this machine and sets nothing up. It checks that the runtime runs on the GPU and that the recipe fits, and
 chooses the largest fitting context, and at the same context the variant with the larger memory peak that fits.
 A GPU class is its family, except that the N1x (`nvidia-n1x`) shares the GB10's (`nvidia-gb10`): the same
 chip, so what either can run depends only on memory. Measurements keep the family they ran on. `use <recipe>` supports `--ctx`, `--gpu`,
@@ -95,6 +96,12 @@ An Intel GPU is integrated graphics on the `xe` kernel driver (Lunar Lake and ne
 `INTEL_FAMILIES` or else `intel-xe-<device id>`, addressing
 three quarters of RAM up to the kernel's `ttm.pages_limit`. Memory a GPU driver freed and still
 holds in its pool (`GPUReclaim` in `/proc/meminfo`) counts as free RAM: the next model loads into it.
+
+A discrete NVIDIA GPU (an RTX 3080 or 3090, say) is its own family, named from `nvidia-smi`, and
+its memory class is its VRAM rounded up to 8, 10, 12, 16, 24, 32, 48, 80 or 96 GB: a `[[hardware]]` or
+`[[class]]` entry for it says `vram_class = 10`, not `ram_class`. System RAM then only has to hold
+the recipe's `peak_ram_gib`, which admission checks beside the VRAM. Unified-memory GPUs (GB10,
+N1x, Strix) keep `ram_class`.
 Use, start and removal are serialized. Several models can run at once on distinct,
 stable loopback ports, beginning at 11435.
 

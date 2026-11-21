@@ -1,0 +1,44 @@
+name = "Nemotron 3.5 Lightning"
+summary = "30B mixture of experts, 3B active per token, at 4 bits with MTP drafting. Fits a 24 GB RTX 3090."
+runtime = "tensorfold-x86"
+vendor = "nvidia"
+architecture = "moe"
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+
+[server]
+args = ["--max-tokens", "16384"]
+
+[[hardware]]
+gpu = "nvidia-rtx3090"
+vram_class = 24
+measured = "measurements/nemotron-3.5-lightning-tensorfold-rtx3090-24.toml"
+
+[[artifacts]]
+repo = "TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit"
+revision = "d9d758fb83953437f7263256b0d96157e2a348b8"
+license = "other (NVIDIA OpenMDW License Agreement 1.1, see the model card)"
+files = ["*.safetensors", "*.json", "chat_template.jinja"]
+dest = "target"
+model = "."
+
+# The full window with a 4 GiB prompt cache, measured with the desktop's other VRAM users stopped (about 3 GiB):
+# 22.5 GiB at peak, and a 32K-token prompt resumes in 0.1 s instead of 3.4 s. Host memory peaked at 1.7 GiB with
+# the cache empty, so 5.7 with it full. With the other users running there is room for only the variant below:
+# start it with --ctx 65536 (a start with 22.5 GiB not free is refused).
+[[variant]]
+ctx = 262144
+peak_ram_gib = 5.7
+peak_gpu_gib = 22.5
+args = ["--parallel", "1", "--prompt-cache-gib", "4"]
+
+# Measured with a desktop on the card (3.7 of its 24 GiB): 19.8 GiB at peak. One stream and no prompt cache:
+# a cache of 1 GiB or more fails to start there (its staging buffer doesn't fit beside the weights), and
+# 131072 tokens ran out of memory. Context costs little here: 16K to 64K differ by 0.4 GiB.
+[[variant]]
+ctx = 65536
+peak_ram_gib = 1.1
+peak_gpu_gib = 19.8
+args = ["--parallel", "1", "--prompt-cache-gib", "0"]

@@ -28,6 +28,7 @@ The engine reads the catalog beside `agent_local.py`, following the installed en
 - `reviews/` — license and behavior reviews for third-party image digests.
 - `measurements/` — speed and memory on a machine class, which `best.toml` recommends by.
 - `images/<runtime>/Containerfile` — how Omacom builds a runtime's image, for runtimes whose image is built here. Checkout-only, like `tools/`.
+- `images/<id>/` — the Containerfile and keys that build a runtime image Omacom doesn't publish, so its digest can be rebuilt and checked.
 - `tools/bench` and `bench/context.txt` — checkout-only benchmark script and long prompt.
 
 ## Add a recipe
