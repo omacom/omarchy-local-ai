@@ -1,0 +1,17 @@
+image = "localhost/ds4-dfm@sha256:122f92cbc051f192e5ca4d5c8b22b7100b7485621e3bd7f0ee0e0d9c89b47555"
+publisher = "Omacom (built from images/ds4-dfm: Baekpica/ds4-dfm-rs a556720f, no patches, with Caddy 2.11.9 in front)"
+reviewer = "Claude Code for David Heinemeier Hansson"
+date = "2026-11-21"
+version = "ds4-dfm-rs v0.1.6 at a556720f12c2dafba63a5cbb60449f332e1d0efc, `make cuda-spark` (sm_121a) with CUDA 13.4.3; Caddy 2.11.9 (linux arm64 release, SHA-512 from its checksums file)"
+source = "open (MIT), https://github.com/Baekpica/ds4-dfm-rs; Caddy open (Apache-2.0), https://github.com/caddyserver/caddy; image recipe images/ds4-dfm in https://github.com/omacom/omarchy-local-ai"
+license_url = "https://raw.githubusercontent.com/Baekpica/ds4-dfm-rs/a556720f12c2dafba63a5cbb60449f332e1d0efc/LICENSE"
+license_sha256 = "c4c2d4cef8d91b06bf07911b49edd662c3fbcad027acb135c816ec0281d17247"
+checked = [
+  "license: ds4-dfm-rs is MIT (the LICENSE at a556720f hashes as above), and its vendored code keeps its notices; Caddy is Apache-2.0 (LICENSE at v2.11.9, SHA-256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30); the texts ship in /usr/share/licenses",
+  "license: libcudart.so.13, libcublas.so.13 and libcublasLt.so.13 (CUDA 13.4.3) are redistributables under NVIDIA's CUDA EULA, Attachment A, shipped with the EULA text from their packages in /usr/share/licenses/ds4-dfm-rs/nvidia",
+  "build: images/ds4-dfm's Containerfile fetches the pinned commit and builds it with the repository's own `make cuda-spark` and the Rust toolchain rust-toolchain.toml names, with the crates Cargo.lock pins, on docker.io/nvidia/cuda@sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9 (13.4.3-devel-ubuntu24.04), built with Podman on a DGX Spark; the runtime layer is docker.io/library/ubuntu@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 with libgomp1, curl and ca-certificates, and carries no CUDA toolkit: libcuda comes from the CDI spec",
+  "behavior: ds4-server loads the model directory given with -m and checks each part against the SHA-256 in its release.json; the image carries no weights. It listens on loopback only (127.0.0.1:8081), behind Caddy on 8080, whose Caddyfile has the admin API, automatic HTTPS and config persistence off and refuses every request without `Authorization: Bearer $DS4_API_KEY`; the serve script refuses to start with an empty key",
+  "acceptance (2026-11-21): serves Inkling 2 Small hVQ with a read-only root and a tmpfs at /tmp, all capabilities dropped, no-new-privileges and the GPU through CDI on a DGX Spark running the desktop, at 28-31 tokens a second",
+  "acceptance (2026-11-21): rejects requests without the key or with a wrong one (401) and serves them with it (200), on /v1/models and /v1/chat/completions",
+  "acceptance (2026-11-21): stops on SIGTERM in about a second, and the memory is free at once",
+]

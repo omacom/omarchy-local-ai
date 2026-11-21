@@ -1,0 +1,27 @@
+# ds4-dfm-rs's ds4-server, built with CUDA for the DGX Spark by Omacom from images/ds4-dfm: Baekpica's
+# engine for vector-quantized checkpoints at a pinned commit, with no patches. It serves OpenAI chat,
+# completions and responses and Anthropic messages, with tool calls and images. The server checks no
+# key, so the image's Caddy answers on 8080, refuses any request without the key in DS4_API_KEY and
+# streams the rest to the server on loopback. The driver's libcuda arrives through CDI; the image
+# carries only cudart and cuBLAS.
+image = "localhost/ds4-dfm@sha256:122f92cbc051f192e5ca4d5c8b22b7100b7485621e3bd7f0ee0e0d9c89b47555"
+tier = "third-party"
+review = "reviews/ds4-dfm-122f92cbc051.toml"
+port = 8080
+command = ["serve", "--cuda"]
+# The server listens only once the model is on the GPU, so the key's /v1/models answers when it's ready.
+health = { probe = ["/bin/sh", "-c", "curl -fsS -o /dev/null --max-time 4 -H \"Authorization: Bearer $DS4_API_KEY\" http://127.0.0.1:8080/v1/models"] }
+# It writes nothing but its caches, which go to the tmpfs; it pins host memory for its copies.
+run = { devices = ["cdi-nvidia"], memlock = "unlimited", tmpfs = "/tmp" }
+# Its CUDA kernels are built for the GB10's sm_121a.
+gpus = ["nvidia-gb10"]
+reserved = ["--host", "--port", "--cors", "--trace", "--emit-trace", "--kv-disk-dir", "--engram-dir", "--posttrain", "--zchain", "DS4_API_KEY", "DS4_KV_OFFLOAD_DIR"]
+
+[inputs]
+model = { arg = "-m" }
+ctx = { arg = "-c" }
+alias = { arg = "--model-id" }
+key = { env = "DS4_API_KEY" }
+temperature = { arg = "--temp" }
+top_p = { arg = "--top-p" }
+top_k = { arg = "--top-k" }

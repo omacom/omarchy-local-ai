@@ -1,0 +1,48 @@
+name = "Inkling 2 Small"
+runtime = "ds4-dfm"
+vendor = "thinkingmachines"
+architecture = "moe"
+# Screenshots and photos through the checkpoint's own vision tower, read from disk per image.
+input = ["text", "image"]
+
+[[hardware]]
+gpu = "nvidia-gb10"
+ram_class = 128
+measured = "measurements/inkling-2-small-ds4-dfm-gb10-128.toml"
+
+# Baekpica's hVQ conversion of Thinking Machines' 594B-A17B model, made to fit one DGX Spark: every routed
+# expert at 1.5 bits a weight (one 12-bit codebook index per 8 weights), attention and the head at Q4_K, the
+# router, norms and vision tower as released. Its own measurements against the original give the same top
+# token on 88% of positions. 52 parts, each checked against release.json by SHA-256 when the server loads it;
+# the token embedding stays on disk, a row read per token.
+[[artifacts]]
+repo = "Baekpica/Inkling-2-Small-VQ-GGUF"
+revision = "9f0711de8d7332cb058d9408c1fef38d7d30aac6"
+license = "apache-2.0"
+files = ["release.json", "*.gguf"]
+dest = "model"
+model = "."
+
+# The conversion carries no tokenizer or template: those of the revision it was made from sit beside the
+# parts, where the server checks each against the SHA-256 it pins.
+[[artifacts]]
+repo = "thinkingmachines/Inkling-2-Small-MXFP8"
+revision = "086a047e8b7ff2ac902dd52355328ddb66b16914"
+license = "apache-2.0"
+files = ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "processor_config.json"]
+dest = "model"
+
+# Measured on a DGX Spark running the Omarchy desktop: 106 GiB of weights go to the GPU, and with the K/V
+# cache, scratch, an image's reserve and the server's own 4 GiB floor it plans 113 GiB. The model takes 1M
+# tokens, but at 131,072 the driver refused GPU allocations beside a desktop and the server hung on its
+# first request; its DSpark drafter (10 GiB more) doesn't fit either. The K/V cache stays on the GPU.
+[[variant]]
+ctx = 65536
+peak_ram_gib = 112
+peak_gpu_gib = 110
+
+# The checkpoint's generation defaults: temperature 1.0, no top-p or top-k cut.
+[sampling]
+temperature = 1.0
+top_p = 1.0
+top_k = 0

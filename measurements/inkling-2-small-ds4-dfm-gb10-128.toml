@@ -1,0 +1,53 @@
+recipe = "inkling-2-small-ds4-dfm"
+measured_at = "2026-11-21"
+image = "localhost/ds4-dfm@sha256:122f92cbc051f192e5ca4d5c8b22b7100b7485621e3bd7f0ee0e0d9c89b47555"
+ctx = 65536
+load_seconds = 51.0
+fileset = "e4f0e5d62d7ad1c0"
+method = "tools/bench: 2 warmups (a 128-token reply, a ~4K-token prompt from the corpus tail), then a short prompt, a ~32K-token prompt from bench/context.txt and a code-copying edit of bench/edit.py.txt, temperature 0, enable_thinking false, 512 tokens out, streamed"
+
+[machine]
+platform = "aarch64-gb10"
+gpu = "nvidia-gb10"
+ram_class = 128
+system = "NVIDIA NVIDIA_DGX_Spark"
+kernel = "7.3.0-72-omarchy"
+cpu = "Cortex-X925 + Cortex-A725"
+gpu_driver = "615.78.08"
+
+[memory]
+observed_at_load_gib = 108.5
+min_available_during_bench_gib = 5.6
+total_gib = 121.9
+
+[short]
+prompt_tokens = 46
+completion_tokens = 512
+ttft_s = 0.33
+prefill_tok_s = 141.2
+decode_tok_s = 31.5
+total_s = 16.54
+
+[long]
+prompt_tokens = 38587
+completion_tokens = 512
+ttft_s = 29.43
+prefill_tok_s = 1311.1
+decode_tok_s = 29.2
+total_s = 46.95
+
+[edit]
+prompt_tokens = 2891
+completion_tokens = 512
+ttft_s = 2.35
+prefill_tok_s = 1229.8
+decode_tok_s = 31.2
+total_s = 18.72
+
+[[artifacts]]
+repo = "Baekpica/Inkling-2-Small-VQ-GGUF"
+revision = "9f0711de8d7332cb058d9408c1fef38d7d30aac6"
+
+[[artifacts]]
+repo = "thinkingmachines/Inkling-2-Small-MXFP8"
+revision = "086a047e8b7ff2ac902dd52355328ddb66b16914"
