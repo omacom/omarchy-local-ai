@@ -9,8 +9,8 @@
 # - libturbojpeg 3.1.4.1 for JPEG pictures and libwebpdecoder 1.6.0 for WebP, built from their signed
 #   source releases: Debian ships 2.1.5 and 1.5.0, and the server refuses other releases.
 #
-#   podman build --platform linux/arm64 -t tensorfold:1.2.10 images/tensorfold   (GB10 / N1x)
-#   podman build --platform linux/amd64 -t tensorfold:1.2.10 images/tensorfold   (RTX)
+#   podman build --platform linux/arm64 -t tensorfold:1.3.3 images/tensorfold   (GB10 / N1x)
+#   podman build --platform linux/amd64 -t tensorfold:1.3.3 images/tensorfold   (RTX)
 
 ARG DEBIAN=docker.io/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
@@ -64,9 +64,9 @@ RUN case "${TARGETARCH}" in \
 
 FROM ${DEBIAN} AS tensorfold
 ARG TARGETARCH
-ARG TF_VERSION=1.2.10
-ARG TF_SHA256_ARM64=c335c44f81d55847a5f81d74a94ac3d09f81bd6688247cff972cf1f63fc18105
-ARG TF_SHA256_AMD64=bc77f6d4112dd67a3298bd2560b9f0e7c9a54d3c5b0036a9c52c0d27f6c7e9fd
+ARG TF_VERSION=1.3.3
+ARG TF_SHA256_ARM64=95e4388aba4af1f41a4f50265fd19f7636fa34007f8392a8723d8b2e1612491c
+ARG TF_SHA256_AMD64=928c34949c4b23089fa240765e424e6cc95451568ec295f9729f906964fc17f2
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
@@ -83,7 +83,7 @@ RUN case "${TARGETARCH}" in \
  && mv "/tmp/${name}" /opt/tensorfold
 
 FROM ${DEBIAN}
-ARG TF_VERSION=1.2.10
+ARG TF_VERSION=1.3.3
 # curl is the health probe; nothing else is added to the base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -109,6 +109,11 @@ ENV PATH=/opt/tensorfold/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/
 # on a GB10 that lifts 16K-token prefill from 1,948 to 2,119 tok/s with decode unchanged. Other
 # families do not read it.
 ENV TF_FLASHNEXT_CHUNK_SOLO=3072
+# TensorFold 1.3.3 loads Flash Next's draft head as 4-bit rows by default, which frees 2.3 GiB and takes
+# longer a round: on an N1x a code-copying edit decodes at 252 tok/s against 273 with the head as
+# stored, with the same tokens and the same drafts kept. The 8 GiB prompt cache fits either way, so the
+# head stays bf16, as it was through 1.2.10.
+ENV TF_FLASHNEXT_DRAFT_HEAD=bf16
 # TensorFold keeps 12.2 GiB of device memory free by default; 9 GiB leaves it the headroom it needs on a
 # 128 GB GB10 (a 194K-token prompt and a follow-up turn peak with room to spare) and gives the 2.8 GiB
 # to the prompt cache, which is what lets an agent's next turn resume instead of prefilling again.
