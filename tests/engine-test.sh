@@ -279,6 +279,12 @@ with patch.object(a.subprocess, "run", return_value=SimpleNamespace(returncode=0
   check("held_bytes includes discrete NVIDIA VRAM held by processes in the cgroup",
         a.held_bytes("/unit", str(nv_cg), str(nv_cg / "no-proc")) == 5 * 2**30)
 
+cdi_rt = {"run": {"devices": ["cdi-nvidia"]}}
+check("device_lines binds the selected discrete NVIDIA card by UUID and keeps all for unified NVIDIA",
+      a.device_lines(cdi_rt, nv_cards[0]) == ["AddDevice=nvidia.com/gpu=GPU-1111"]
+      and a.device_lines(cdi_rt, nv_cards[1]) == ["AddDevice=nvidia.com/gpu=GPU-2222"]
+      and a.device_lines(cdi_rt, {"vendor": "nvidia", "family": "nvidia-gb10", "unified": True}) == ["AddDevice=nvidia.com/gpu=all"])
+
 # Discrete vram_class matching, measurement lookup and validation.
 vram_entry = {"gpu": "nvidia-rtx4090", "vram_class": 24, "recipes": ["dgpu-model"]}
 vram_recipe = dict(recipe, runtime="cuda", hardware=[{"gpu": "nvidia-rtx4090", "vram_class": 24, "measured": "gb10.toml"}])

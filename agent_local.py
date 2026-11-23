@@ -2013,7 +2013,8 @@ def device_lines(runtime, gpu):
     elif device == "kfd":
       lines.append("AddDevice=/dev/kfd")
     elif device == "cdi-nvidia":
-      lines.append("AddDevice=nvidia.com/gpu=all")
+      target = gpu.get("nvidia_uuid") or gpu.get("nvidia_index") or "all"
+      lines.append(f"AddDevice=nvidia.com/gpu={target}")
     elif device == "infiniband":
       lines.append("AddDevice=/dev/infiniband")
   return lines

@@ -59,7 +59,7 @@ jobs:
           declare -A check=(
             [llamacpp]="llama-server --version" [llamacpp-inkling2]="llama-server --version" [gufo]="gufo --version && command -v serve caddy" [sdcpp]="command -v sd-server" [acestep]="command -v ace-server" [stable-audio-3-vulkan]="command -v sa3-server && sa3-server --help >/dev/null 2>&1"
             [stable-audio-3]="command -v sa3-server && sa3-server --help >/dev/null && python3 -c 'import ai_edge_litert, numpy, sentencepiece' && command -v ffmpeg"
-            [sdcpp-cuda-x86]="command -v sd-server" [acestep-cuda-x86]="command -v ace-server"
+            [sdcpp-cuda-x86]="sd-server --help >/dev/null" [acestep-cuda-x86]="ace-server --help >/dev/null"
             [sdcpp-cuda]="command -v sd-server" [acestep-cuda]="command -v ace-server" [stable-audio-3-cuda]="command -v sa3-server" [tensorfold]="command -v tensorfold-native"
             [tensorfold-dsv41]="command -v tensorfold-native" [tensorfold-glm53]="command -v tensorfold-native"
             [tensorfold-nemotron-bolt]="command -v tensorfold-native" [tensorfold-inkling2]="command -v tensorfold-native" [llamacpp-hy4]="command -v llama-server" [inkling2-exl3]="command -v serve && python3 -c 'import exllamav3, fastapi, transformers'"
