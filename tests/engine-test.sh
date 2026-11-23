@@ -1745,6 +1745,26 @@ for name, answers, message in (("that answers without the key", [(200, found)], 
   with patch.object(a, "http_status", side_effect=answers):
     raises(f"an ace-server {name} is refused", lambda: a.post_start_checks("song", "test-key", ace_rt), message)
 
+# Stable Audio 3 music runtime: api = "sa3" checks /props for dit, decoder, text_encoder, tokenizer,
+# and vocals = false marks an instrumental-only music recipe.
+sa3_rt = {"image": "registry.example/test/sa3-cuda@sha256:" + "d" * 64, "tier": "omarchy", "api": "sa3", "port": 8085,
+          "health": {"probe": ["curl", "http://127.0.0.1:8085/health"]}, "command": ["sa3-server"],
+          "reserved": ["--port", "SA3_API_KEY"], "run": {"devices": ["cdi-nvidia"], "tmpfs": "/tmp"}, "gpus": ["nvidia-gb10"],
+          "inputs": {"model": {"arg": "--models"}, "key": {"env": "SA3_API_KEY"}}}
+sa3_song = {"name": "Stable Audio 3 Medium", "vendor": "stability", "kind": "music", "vocals": False, "runtime": "sa3-cuda",
+            "hardware": [{"gpu": "nvidia-n1x", "ram_class": 128, "measured": "measurements/model.toml"}],
+            "artifacts": [{"repo": "test/sa3", "revision": "a" * 40, "license": "other", "files": ["dit.gguf"], "dest": "sa3", "model": "."}],
+            "variant": [picture_variant]}
+check("an sa3 music runtime and instrumental recipe validate",
+      not a.validate_runtime("sa3-cuda", sa3_rt) and not a.validate_recipe("sa3-song", sa3_song, {"sa3-cuda": sa3_rt}),
+      "\n".join(a.validate_runtime("sa3-cuda", sa3_rt) + a.validate_recipe("sa3-song", sa3_song, {"sa3-cuda": sa3_rt})))
+check("vocals is only for music recipes", any(".vocals" in e for e in a.validate_recipe("model", dict(recipe, vocals=False), {"server": runtime})))
+sa3_found = b'{"models": {"dit": ["dit.gguf"], "decoder": ["same.gguf"], "text_encoder": ["t5.gguf"], "tokenizer": ["vocab.gguf"]}}'
+with patch.object(a, "http_status", side_effect=[(401, b""), (200, sa3_found)]):
+  a.post_start_checks("sa3-song", "test-key", sa3_rt)
+with patch.object(a, "http_status", side_effect=[(401, b""), (200, b'{"models": {"dit": ["dit.gguf"]}}')]):
+  raises("an sa3-server missing parts is refused", lambda: a.post_start_checks("sa3-song", "test-key", sa3_rt), "found no decoder, text_encoder, tokenizer model")
+
 
 # A runtime's warm-up: a malformed one is refused; one prompt of the model's own vocabulary goes
 # out with the key, nothing is sent without a tokenizer, and a failure doesn't fail the start.

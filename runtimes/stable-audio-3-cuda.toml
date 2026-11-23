@@ -1,0 +1,23 @@
+# Stable Audio 3 CUDA server (betweentwomidnights/sa3.cpp) built for NVIDIA's unified-memory ARM
+# machines (GB10, N1x) from images/stable-audio-3-cuda. Links libsa3/ggml statically with CUDA
+# 13.4.3 for compute capability 12.1 and wraps it in sa3-server (async job API matching ace-server,
+# with constant-time Bearer auth from SA3_API_KEY / --api-key-file and in-memory MP3 encoding via
+# libmp3lame). The driver's libcuda arrives through CDI; the image carries only cudart and cuBLAS.
+# Weights load on demand with frugal stage-by-stage offloading and unload immediately after every
+# song, so it holds no GPU memory between songs and is checked by the models it found (api = "sa3").
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:ed0391edbd07382b86066a29d2dbd5e11ca5d04d4150fe0bee816b58c610ab18"
+tier = "third-party"
+review = "reviews/stable-audio-3-cuda-ed0391edbd07.toml"
+api = "sa3"
+port = 8085
+command = ["sa3-server", "--host", "0.0.0.0", "--port", "8085"]
+health = { probe = ["/bin/sh", "-c", "curl -fsS -H \"Authorization: Bearer $OMARCHY_LOCAL_KEY\" http://127.0.0.1:8085/health"] }
+# It writes nothing; the tmpfs is for the driver's caches.
+run = { devices = ["cdi-nvidia"], tmpfs = "/tmp" }
+# Its CUDA kernels are built for the GB10's sm_121 (the N1x shares its class).
+gpus = ["nvidia-gb10"]
+reserved = ["--host", "--port", "--api-key", "--api-key-file", "SA3_API_KEY"]
+
+[inputs]
+model = { arg = "--models" }
+key = { env = "SA3_API_KEY" }

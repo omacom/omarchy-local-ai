@@ -1,0 +1,72 @@
+# Stable Audio 3 CUDA server for NVIDIA's unified-memory ARM machines (GB10, N1x),
+# as omarchy-local-ai runs it. Built from betweentwomidnights/sa3.cpp at a pinned
+# commit with CUDA 13.4.3 for compute capability 12.1, linked statically against
+# libsa3/ggml and wrapped in sa3-server (HTTP async job API matching ace-server
+# and the CPU sa3-server, with constant-time Bearer auth from SA3_API_KEY or
+# --api-key-file, and in-memory MP3 encoding via libmp3lame). The driver's libcuda
+# arrives through CDI; the image carries only the CUDA runtime libraries sa3-server
+# links, which NVIDIA's CUDA EULA lists as redistributable (Attachment A).
+
+# CUDA 13.4.3, the toolkit matching the 615 driver's CUDA 13.4, on Ubuntu 24.04.
+ARG BUILD_BASE=docker.io/nvidia/cuda@sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9
+ARG BASE=docker.io/library/ubuntu@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
+
+FROM ${BUILD_BASE} AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates libmp3lame-dev \
+ && rm -rf /var/lib/apt/lists/*
+ARG COMMIT=2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d
+RUN git clone https://github.com/betweentwomidnights/sa3.cpp /src \
+ && git -C /src checkout --quiet "$COMMIT" \
+ && git -C /src submodule update --quiet --init --recursive
+COPY sa3-server.cpp /src/tools/omarchy-sa3-server.cpp
+RUN cat <<'EOF' >> /src/CMakeLists.txt
+
+find_package(Threads REQUIRED)
+add_executable(omarchy-sa3-server
+    tools/omarchy-sa3-server.cpp
+    vendor/cpp-httplib/httplib.cpp)
+target_link_libraries(omarchy-sa3-server PRIVATE sa3_shared Threads::Threads mp3lame)
+target_include_directories(omarchy-sa3-server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-httplib
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/yyjson)
+EOF
+# Compute capability 12.1 is the GB10 and the N1x. The CPU side stays generic
+# ARMv8, so the build does not depend on the machine it ran on. NCCL is for
+# several GPUs, and these machines have one.
+ARG CUDA_ARCHITECTURES=121
+RUN cmake -S /src -B /build \
+      -DSA3_CUDA=ON -DGGML_NATIVE=OFF -DGGML_CUDA_NCCL=OFF \
+      -DSA3_STATIC=ON -DBUILD_SHARED_LIBS=OFF -DSA3_BUILD_TOOLS=OFF -DBUILD_TESTING=OFF \
+      -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES" -DCMAKE_BUILD_TYPE=Release \
+ && cmake --build /build --target omarchy-sa3-server -j"$(nproc)"
+# The CUDA libraries sa3-server needs at run time, by what it links, with
+# cuBLASLt, which cuBLAS loads. Their packages' copyright files hold the EULA.
+RUN mkdir -p /cuda /licenses/nvidia \
+ && ldd /build/bin/omarchy-sa3-server | awk '/\/usr\/local\/cuda/ { print $3 }' \
+    | while read -r lib; do cp -L "$lib" /cuda/; done \
+ && cp -L /usr/local/cuda/lib64/libcublasLt.so.13 /cuda/ \
+ && for package in cuda-cudart-13-4 libcublas-13-4; do \
+      install -Dm644 "/usr/share/doc/$package/copyright" "/licenses/nvidia/$package"; \
+    done \
+ && ls -la /cuda
+# The licenses of sa3.cpp, ggml and the third-party code built in.
+RUN cd /src \
+ && find . -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -print \
+    | while read -r file; do install -Dm644 "$file" "/licenses/${file#./}"; done
+
+FROM ${BASE}
+# OpenMP for ggml's CPU side; libmp3lame0 for MP3 encoding; curl for the health probe.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 libmp3lame0 curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /cuda/ /usr/local/lib/
+RUN ldconfig
+COPY --from=build /build/bin/omarchy-sa3-server /usr/bin/sa3-server
+COPY --from=build /licenses /usr/share/licenses/sa3.cpp
+LABEL org.opencontainers.image.source="https://github.com/omacom/omarchy-local-ai"
+LABEL org.opencontainers.image.description="Stable Audio 3 (sa3.cpp) CUDA server for omarchy-local-ai"
+LABEL org.opencontainers.image.licenses="MIT"
+EXPOSE 8085
+CMD ["sa3-server", "--host", "0.0.0.0", "--port", "8085", "--models", "/models"]

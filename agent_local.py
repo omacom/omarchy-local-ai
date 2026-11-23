@@ -98,8 +98,8 @@ KINDS = ("text", "image", "video", "music")
 BEST_FIELDS = {"text": "recipes", "image": "images", "video": "videos", "music": "music"}
 # How the engine checks a server it just started answers only with the key: an OpenAI-compatible
 # /v1/models that lists the recipe id, stable-diffusion.cpp's model status reporting ready, or
-# acestep.cpp's list of the models it found.
-APIS = ("openai", "sdcpp", "acestep")
+# acestep.cpp's / sa3-server's list of the models it found.
+APIS = ("openai", "sdcpp", "acestep", "sa3")
 GFX_FAMILIES = {"gfx1151": "amd-strix-halo", "gfx1150": "amd-strix-point"}
 # Intel integrated graphics on the xe kernel driver (Lunar Lake and newer) is a GPU here. Those
 # named by PCI device id keep that name; any other is intel-xe-<device id>.
@@ -892,6 +892,9 @@ def validate_recipe(rid, recipe, runtimes, root=None):
   # rather than redrawing it from a description.
   if "edit" in recipe and (not isinstance(recipe["edit"], bool) or kind != "image"):
     errors.append(f"{where}.edit: true or false, for image models only")
+  # Whether a music model sings with lyrics; omitted means true.
+  if "vocals" in recipe and (not isinstance(recipe["vocals"], bool) or kind != "music"):
+    errors.append(f"{where}.vocals: true or false, for music models only")
   # A model kept for trying by name: out of the listings until it's set up, and never recommended.
   if "experimental" in recipe and not isinstance(recipe["experimental"], bool):
     errors.append(f"{where}.experimental: true or false")
@@ -1281,6 +1284,7 @@ def recipe_listing(catalog, profile, running=(), experimental=False):
       "id": rid,
       "kind": recipe_kind(recipe),
       "edit": bool(recipe.get("edit")),
+      **({"vocals": bool(recipe.get("vocals", True))} if recipe_kind(recipe) == "music" else {}),
       "name": recipe.get("name", rid),
       "runtime": recipe.get("runtime", ""),
       "tier": runtime.get("tier", ""),
@@ -2144,16 +2148,17 @@ def http_status(url, key=None, timeout=10):
 
 
 # stable-diffusion.cpp's sd-server lists itself as sd-cpp-local, never the recipe, so it is
-# checked by the state of the model it loaded instead. acestep.cpp's ace-server loads a model
-# only when asked for a song, so it is checked by the models it found to load.
-STATUS_PATHS = {"sdcpp": "/sdcpp/v1/models/status", "acestep": "/props"}
+# checked by the state of the model it loaded instead. acestep.cpp's ace-server and sa3-server
+# load a model only when asked for a song, so each is checked by the models it found to load.
+STATUS_PATHS = {"sdcpp": "/sdcpp/v1/models/status", "acestep": "/props", "sa3": "/props"}
 ACESTEP_PARTS = ("lm", "embedding", "dit", "vae")
+SA3_PARTS = ("dit", "decoder", "text_encoder", "tokenizer")
 
 
 def post_start_checks(rid, key, runtime=None):
   """The server just started must refuse a request without the key, accept the key and serve
   this recipe: by its OpenAI model list naming the recipe id, for sd-server by its loaded
-  model reporting ready, or for ace-server by its finding every model a song takes."""
+  model reporting ready, or for ace-server / sa3-server by its finding every model a song takes."""
   api = (runtime or {}).get("api", "openai")
   sdcpp = api == "sdcpp"
   base = f"http://127.0.0.1:{port_for(rid)}{STATUS_PATHS[api]}" if api in STATUS_PATHS else f"{endpoint(rid)}/models"
@@ -2171,12 +2176,13 @@ def post_start_checks(rid, key, runtime=None):
     if state != "ready":
       raise LocalError(f"Port {port_for(rid)} reports its image model {state or 'in an unknown state'}, not ready")
     return
-  if api == "acestep":
+  if api in ("acestep", "sa3"):
     try:
       found = json.loads(body).get("models", {})
     except (ValueError, AttributeError):
       found = {}
-    missing = [part for part in ACESTEP_PARTS if not found.get(part)]
+    parts = ACESTEP_PARTS if api == "acestep" else SA3_PARTS
+    missing = [part for part in parts if not found.get(part)]
     if missing:
       raise LocalError(f"Port {port_for(rid)} found no {', '.join(missing)} model to make music with")
     return
@@ -3692,10 +3698,11 @@ def model_record(rid, manifest, profile):
     # Whether the other machines on the tailnet can use it.
     "shared": rid in shared_recipes(),
     "recipe": rid,
-    # text or image: rows without it are text models.
+    # text, image, video or music: rows without it are text models.
     "kind": recipe_kind(recipe),
     # An image model that edits by instruction.
     "edit": bool(recipe.get("edit")),
+    **({"vocals": bool(recipe.get("vocals", True))} if recipe_kind(recipe) == "music" else {}),
     "name": recipe.get("name", rid),
     "vendor": vendor,
     "runtime": manifest["runtime_id"],
@@ -3880,9 +3887,12 @@ def status_record(catalog, profile):
   # follows the catalog, so a recipe that gains a vendor marks the models
   # already set up from it.
   for rid, row in models.items():
-    vendor = (catalog.recipes.get(rid) or {}).get("vendor", "")
+    cat = catalog.recipes.get(rid) or {}
+    vendor = cat.get("vendor", "")
     if vendor:
       row["vendor"] = vendor
+    if recipe_kind(cat) == "music" and "vocals" in cat:
+      row["vocals"] = bool(cat["vocals"])
     row.update(update_fields(rid, load_model(rid), catalog, profile))
     # An update under way: how far its download has got, until it's done.
     record = load_installing(rid)
@@ -4799,6 +4809,7 @@ def shared_listing(record, catalog, profile, dns):
       # image model is for Fantasi, never for an agent.
       "kind": model.get("kind", "text"),
       "edit": bool(model.get("edit")),
+      **({"vocals": bool(model["vocals"])} if "vocals" in model else {}),
       # A video model's longest clip on the host.
       **({"max_seconds": model["max_seconds"]} if "max_seconds" in model else {}),
       # Dense or mixture of experts, which a peer's panel shows beside the
@@ -5283,6 +5294,7 @@ def clean_listing(listing, dns):
       "vendor": model.get("vendor") if ID_RE.match(str(model.get("vendor", ""))) else "",
       "kind": model.get("kind") if model.get("kind") in KINDS else "text",
       "edit": model.get("edit") is True,
+      **({"vocals": model["vocals"] is not False} if model.get("kind") == "music" and "vocals" in model else {}),
       **({"max_seconds": int(model["max_seconds"])} if isinstance(model.get("max_seconds"), int) and not isinstance(model.get("max_seconds"), bool) and 0 <= model["max_seconds"] <= 600 else {}),
       "architecture": model.get("architecture") if model.get("architecture") in ARCHITECTURES else "",
       "ctx": int(ctx) if ctx and ctx > 0 else 0,

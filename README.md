@@ -39,7 +39,7 @@ The engine reads the catalog beside `agent_local.py`, following the installed en
 
 ## Build a runtime image
 
-A runtime whose image is built here has its Containerfile in `images/<image>/`: `llamacpp`, `sdcpp`, `sdcpp-cuda`, `acestep`, `acestep-cuda`, `tensorfold`, `tensorfold-dsv41`, `tensorfold-glm53`, `tensorfold-nemotron-bolt`, `llamacpp-hy4` and `inkling2-exl3`. The base image and upstream commits are pinned in the Containerfile, but packages come from the distribution at build time, so a rebuild gives a new digest even with nothing changed. To update one, for example to a newer llama.cpp:
+A runtime whose image is built here has its Containerfile in `images/<image>/`: `llamacpp`, `sdcpp`, `sdcpp-cuda`, `acestep`, `acestep-cuda`, `stable-audio-3-cuda`, `tensorfold`, `tensorfold-dsv41`, `tensorfold-glm53`, `tensorfold-nemotron-bolt`, `llamacpp-hy4` and `inkling2-exl3`. The base image and upstream commits are pinned in the Containerfile, but packages come from the distribution at build time, so a rebuild gives a new digest even with nothing changed. To update one, for example to a newer llama.cpp:
 
 1. Change the pinned `COMMIT` and its `BUILD` tag, or the base digest, in `images/llamacpp/Containerfile`, in a pull request. CI builds every image a pull request changes, to check it.
 2. Merging it publishes the image: `.github/workflows/images.yml` pushes `ghcr.io/omacom/omarchy-local-ai/llamacpp:<version>-<run>` and puts the digest to pin in the run's summary. Run the workflow by hand, naming the image, to rebuild without a change, for the distribution's newer packages.

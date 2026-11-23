@@ -1,0 +1,18 @@
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:ed0391edbd07382b86066a29d2dbd5e11ca5d04d4150fe0bee816b58c610ab18"
+publisher = "Omacom (built from images/stable-audio-3-cuda: betweentwomidnights/sa3.cpp 2af7f674 + sa3-server)"
+reviewer = "Antigravity for David Heinemeier Hansson"
+date = "2026-11-23"
+version = "sa3.cpp 2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d + sa3-server (libsa3 ABI v1 + libmp3lame), built with CUDA 13.4.3 for compute capability 12.1"
+source = "open (MIT), https://github.com/betweentwomidnights/sa3.cpp; image recipe images/stable-audio-3-cuda in https://github.com/omacom/omarchy-local-ai"
+license_url = "https://raw.githubusercontent.com/betweentwomidnights/sa3.cpp/2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d/LICENSE"
+license_sha256 = "522b5a432d43a08a760e8da70e9c3759ee9c09aceb504881b2a79e0c74570498"
+checked = [
+  "license: sa3.cpp is MIT (the LICENSE at 2af7f674 hashes as above); its ggml submodule is MIT; its vendored cpp-httplib and yyjson are MIT; libmp3lame0 is LGPL (Ubuntu package); the license texts ship in /usr/share/licenses/sa3.cpp",
+  "license: libcudart.so.13, libcublas.so.13 and libcublasLt.so.13 (CUDA 13.4.3) are redistributables under NVIDIA's CUDA EULA, Attachment A, shipped inside this value-added runtime with the EULA text from their packages in /usr/share/licenses/sa3.cpp/nvidia",
+  "build: images/stable-audio-3-cuda's Containerfile builds betweentwomidnights/sa3.cpp at commit 2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d with sa3-server on docker.io/nvidia/cuda@sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9 (13.4.3-devel-ubuntu24.04), with SA3_CUDA for compute capability 12.1, no NCCL and a generic ARMv8 CPU side; the runtime layer is docker.io/library/ubuntu@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 with libgomp1, libmp3lame0, curl and ca-certificates, and carries no CUDA toolkit: libcuda comes from the CDI spec",
+  "behavior: discovers DiT, SAME decoder, T5Gemma text encoder, tokenizer and conditioner GGUFs under --models, loads them only during synthesis with frugal stage-by-stage GPU offloading and releases the backend right after every song; carries no model weights",
+  "acceptance (2026-11-23): serves with a read-only root and a tmpfs at /tmp, all capabilities dropped (CapEff 0), no-new-privileges and the GPU through CDI on an N1x (128 GB, driver 615.78.08), rendering a 60 s song in 5.0 s (12.0x realtime) and a 180 s song in 13.5 s (13.3x realtime) to 192 kbit/s MP3 at 6.3 GiB peak GPU memory (~0.2 GiB idle CUDA context, 0 B written to /tmp)",
+  "acceptance (2026-11-23): on the engine's internal network outbound connections fail (DNS fails)",
+  "acceptance (2026-11-23): rejects requests without or with a wrong key (401) and serves them with the right key (200) on /health and /props",
+  "acceptance (2026-11-23): cancels an in-flight 180 s synthesis job cleanly in 0.45 s and stops on SIGTERM cleanly",
+]

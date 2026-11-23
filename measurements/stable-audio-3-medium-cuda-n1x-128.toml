@@ -1,0 +1,33 @@
+recipe = "stable-audio-3-medium-cuda"
+measured_at = "2026-11-23"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:ed0391edbd07382b86066a29d2dbd5e11ca5d04d4150fe0bee816b58c610ab18"
+load_seconds = 2.0
+fileset = "35502b1b9d08eda2"
+method = "a 60 s and a 180 s instrumental track through /synth on the engine-run sa3-server (CUDA sm_121, 8 steps, medium FP16 DiT + SAME-L FP16 decoder + T5Gemma FP16 encoder, frugal per-stage offloading) to 192 kbit/s MP3; GPU memory from nvidia-smi compute apps every 0.2 s"
+
+[machine]
+platform = "aarch64-n1x"
+gpu = "nvidia-n1x"
+ram_class = 128
+system = "ASUS ProArt P14 H7407BA"
+kernel = "7.3.0-73-omarchy"
+cpu = "Cortex-X925 + Cortex-A725"
+gpu_driver = "615.78.08"
+
+[memory]
+observed_at_load_gib = 0.2
+min_available_during_bench_gib = 102.2
+total_gib = 120.3
+peak_gpu_gib = 6.3
+
+[music]
+song_60s_rendered_s = 5.0
+song_180s_rendered_s = 13.5
+
+[[artifacts]]
+repo = "thepatch/stable-audio-3-medium-GGUF"
+revision = "380a7b25ba6b3b12563b01193227580a9ae7dac0"
+
+[[artifacts]]
+repo = "thepatch/t5gemma-b-b-ul2-GGUF"
+revision = "26caadf5cb1b6523370caff61f6a32337f46625e"
