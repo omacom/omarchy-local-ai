@@ -1,0 +1,51 @@
+From 9f3603f63ba4fa82946a29da4712ccc47b6e90e4 Mon Sep 17 00:00:00 2001
+From: David Heinemeier Hansson <david@hey.com>
+Date: Fri, 20 Nov 2026 09:35:58 +0100
+Subject: [PATCH] weights: upload through ordinary memory
+
+NVIDIA's driver copies from a file-backed mapping at about 50 MB/s on its
+unified-memory machines (615 driver, N1x): the 4B language model took 83 s
+to load before every song. Copying each tensor into ordinary memory first
+makes that 0.7 s.
+---
+ src/weight-ctx.h | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/weight-ctx.h b/src/weight-ctx.h
+index e43f573..b206c42 100644
+--- a/src/weight-ctx.h
++++ b/src/weight-ctx.h
+@@ -15,6 +15,7 @@
+ 
+ #include <cstddef>
+ #include <cstdio>
++#include <cstring>
+ #include <memory>
+ #include <vector>
+ 
+@@ -59,9 +60,20 @@ static bool wctx_alloc(WeightCtx * wctx, ggml_backend_t backend) {
+     // Mark as weight buffer so ggml_backend_sched assigns ops to the correct
+     // backend based on weight location (avoids fallback through expansion).
+     ggml_backend_buffer_set_usage(wctx->buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+-    size_t total = 0;
++    // Each tensor goes through ordinary memory on its way to the backend. The
++    // sources are mostly the model file's mapping, and NVIDIA's driver copies
++    // from file-backed pages at about 50 MB/s on its unified-memory machines.
++    size_t largest = 0;
+     for (auto & pc : wctx->pending) {
+-        ggml_backend_tensor_set(pc.tensor, pc.src, pc.offset, pc.nbytes);
++        if (pc.nbytes > largest) {
++            largest = pc.nbytes;
++        }
++    }
++    std::unique_ptr<char[]> bounce(new char[largest]);
++    size_t                  total = 0;
++    for (auto & pc : wctx->pending) {
++        memcpy(bounce.get(), pc.src, pc.nbytes);
++        ggml_backend_tensor_set(pc.tensor, bounce.get(), pc.offset, pc.nbytes);
+         total += pc.nbytes;
+     }
+     fprintf(stderr, "[WeightCtx] Loaded %zu tensors, %.1f MB into backend\n", wctx->pending.size(),
+-- 
+2.56.1
+
