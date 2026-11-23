@@ -80,7 +80,7 @@ RUN git clone -q --depth 1 --branch "${XGRAMMAR_TAG}" --recurse-submodules "${XG
  && test "$(git -C /src/xgrammar describe --tags --exact-match)" = "${XGRAMMAR_TAG}"
 
 ARG TF_REPO=https://github.com/ashhart/TensorFold.git
-ARG TF_REF=f350cd3ea253a042e205746928271f9d8f71a82d
+ARG TF_REF=81de26f649677aa72ae0034d4af6e010cd947038
 WORKDIR /src/tensorfold
 RUN test -n "${TF_REF}" || { echo "TF_REF build arg is required" >&2; exit 1; } \
  && git init -q . \
@@ -94,7 +94,7 @@ RUN test -n "${TF_REF}" || { echo "TF_REF build arg is required" >&2; exit 1; } 
 
 # MiaAI-Lab's recipe: its engine patches (only *.patch files apply; a .gitkeep sits beside them) and chat template.
 ARG RECIPE_REPO=https://github.com/MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104.git
-ARG RECIPE_REF=d4226a1bd62a7d264f116fc4736106a037090365
+ARG RECIPE_REF=6c55c20da31a02d6d381a268fa42f8a9ebe0c5d2
 COPY effort-line.patch /opt/effort-line.patch
 RUN git init -q /src/recipe && cd /src/recipe && git remote add origin "${RECIPE_REPO}" \
  && git fetch -q --depth 1 origin "${RECIPE_REF}" && git checkout -q --detach FETCH_HEAD \
@@ -201,7 +201,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8
 ARG PREFIX=/opt/tensorfold
 ARG TF_REPO
-ARG TF_REF=f350cd3ea253a042e205746928271f9d8f71a82d
+ARG TF_REF=81de26f649677aa72ae0034d4af6e010cd947038
 ARG SM=121
 ARG ZIG_VERSION=0.17.0
 ARG PATCHES_HASH=dev
