@@ -1,6 +1,6 @@
 recipe = "stable-audio-3-medium"
 measured_at = "2026-11-23"
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3@sha256:695cc40707888292401c7f1ba55388414f45603e482af9aa07a0544a06c13273"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3@sha256:2b0e9dbd3cf6c70dbe79db1beef9109513ef798559e1313be8fbccb0c75117ac"
 load_seconds = 0.4
 method = "a 60 s and a 180 s instrumental track through /synth on the containerised sa3-server (16 auto-tuned XNNPACK CPU threads, 8 pingpong steps, medium w8a8 DiT + SAME-L w8a8 decoder) to 192 kbit/s MP3; peak memory from podman stats every 0.5 s"
 

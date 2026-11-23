@@ -1,0 +1,15 @@
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3@sha256:2b0e9dbd3cf6c70dbe79db1beef9109513ef798559e1313be8fbccb0c75117ac"
+publisher = "Omacom (built from images/stable-audio-3 by this repository's workflow: Stability-AI/stable-audio-3 790793b8 + sa3-server)"
+reviewer = "Antigravity for David Heinemeier Hansson"
+date = "2026-11-23"
+version = "stable-audio-3 790793b89ddceea612be9ce42ff6830d18f6fa57 + sa3-server (ai-edge-litert 2.4.0, ghcr.io/omacom/omarchy-local-ai/stable-audio-3:790793b8-38)"
+source = "open (MIT), https://github.com/Stability-AI/stable-audio-3; image recipe images/stable-audio-3 in https://github.com/omacom/omarchy-local-ai"
+license_url = "https://raw.githubusercontent.com/Stability-AI/stable-audio-3/790793b89ddceea612be9ce42ff6830d18f6fa57/LICENSE"
+license_sha256 = "16bd922f0deee6f11a76f5582258fdc3abdf67c6b8719dbcafbc34dee31979a6"
+checked = [
+  "license: Stability-AI/stable-audio-3 inference code is MIT (the LICENSE at 790793b8 hashes as above) and ships in /usr/share/licenses/stable-audio-3; model weights arrive separately at runtime from stabilityai/stable-audio-3-optimized under the Stability AI Community License",
+  "build: published to GHCR as a multi-arch manifest list (linux/amd64 sha256:10d20ba83c2e + linux/arm64/v8 sha256:0eb3a1cef711) by images.yml run 45223429288 (stable-audio-3:790793b8-38) from images/stable-audio-3's Containerfile on docker.io/library/python@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39 with pinned ai-edge-litert==2.4.0, numpy==2.4.6, sentencepiece==0.2.3, ffmpeg and curl",
+  "behavior: discovers DiT, decoder, text encoder and tokenizer under --models, auto-tunes XNNPACK CPU threads (capped at 16 and respecting cgroup CPU quotas), runs each stage sequentially and frees weights and /tmp weight caches after every stage; carries no model weights",
+  "acceptance (2026-11-23): pulled anonymously from GHCR and verified under read-only root, tmpfs at /tmp, all capabilities dropped, no-new-privileges, --network none, and no GPU devices on Dell XPS 14 (Intel Core Ultra X7 358H, 64 GB), rendering a 60 s song in 19.6 s and a 180 s song in 79.7 s to 192 kbit/s MP3 at 2.32 GiB peak RAM (0.4 GiB idle, 0 B left in /tmp)",
+  "acceptance (2026-11-23): rejects requests without or with a wrong key (401) and serves them with the right key (200) on /health and /props; bounds active HTTP connections and pending jobs, expires finished results on idle, cancels cleanly mid-generation, and stops on SIGTERM with status 0",
+]

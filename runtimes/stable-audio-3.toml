@@ -4,9 +4,9 @@
 # XNNPACK runtime SIMD dispatch and auto-tuned threads, requiring no GPU devices. Each stage
 # (T5Gemma, DiT, SAME-L decoder) loads only while a song needs it and frees weights + tmpfs
 # cache immediately after, keeping idle memory low.
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3@sha256:695cc40707888292401c7f1ba55388414f45603e482af9aa07a0544a06c13273"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3@sha256:2b0e9dbd3cf6c70dbe79db1beef9109513ef798559e1313be8fbccb0c75117ac"
 tier = "third-party"
-review = "reviews/stable-audio-3-695cc4070788.toml"
+review = "reviews/stable-audio-3-2b0e9dbd3cf6.toml"
 api = "sa3"
 port = 8085
 command = ["sa3-server", "--host", "0.0.0.0", "--port", "8085"]
