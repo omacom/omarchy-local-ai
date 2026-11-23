@@ -1302,7 +1302,7 @@ def _resolve_class(catalog, profile, gpu, ctx=None, field="recipes"):
       # A requested context this recipe has no variant for passes to the next recommendation.
       variant, reason = None, str(error)
     if variant:
-      return rid, variant, skipped
+      return rid, variant, skipped, gpu
     skipped.append((rid, reason))
   details = "; ".join(f"{rid}: {reason}" for rid, reason in skipped)
   raise LocalError(f"No recommended recipe fits this machine: {details}")
@@ -3443,8 +3443,7 @@ def cmd_use(argv):
     raise LocalError(f"A kind goes with best: omarchy models use best {args.kind}")
   if args.target == "best":
     best_ctx = args.ctx if args.kind == "text" else None
-    rid, variant, skipped = resolve_best(catalog, profile, gpu, best_ctx, field=BEST_FIELDS[args.kind])
-    gpu = recipe_gpu(profile, catalog.recipes[rid], args.gpu, catalog.runtimes.get(catalog.recipes[rid].get("runtime")), best_ctx)
+    rid, variant, skipped, gpu = resolve_best(catalog, profile, gpu, best_ctx, field=BEST_FIELDS[args.kind])
     for skipped_id, reason in skipped:
       say(f"Skipping {skipped_id}: {reason}")
     say(f"Best {args.kind} model for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")

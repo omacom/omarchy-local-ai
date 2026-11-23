@@ -223,6 +223,13 @@ amd_rt = {"gpus": ["amd"]}
 check("recipe_gpu prefers a discrete GPU when it fits, and falls back to a larger fitting integrated GPU",
       a.recipe_gpu(dual_amd, small_img, runtime=amd_rt) == dgpu_card
       and a.recipe_gpu(dual_amd, big_vid, runtime=amd_rt) == igpu_big_gtt)
+dual_cat = SimpleNamespace(
+  recipes={"big-vid": dict(big_vid, runtime="amd-rt", hardware=[{"gpu": "amd-gfx1103", "ram_class": 64, "measured": "m.toml"}])},
+  runtimes={"amd-rt": amd_rt},
+  best={"class": [{"gpu": "amd-gfx1103", "ram_class": 64, "recipes": ["big-vid"], "videos": ["big-vid"]}]},
+)
+check("resolve_best preserves the fitting GPU it selected",
+      a.resolve_best(dual_cat, dual_amd, field="videos")[3] == igpu_big_gtt)
 pair_gpu = {"vendor": "nvidia", "family": "nvidia-gb10-pair", "nodes": 2, "unified": True, "memory_gib": 120}
 check("a paired unified GPU still outranks a single discrete GPU",
       a.choose_gpu({"platform": "aarch64-gb10", "ram_gib": 120, "ram_class": 128, "gpus": [dgpu_card, pair_gpu]}) == pair_gpu)
