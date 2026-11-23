@@ -214,8 +214,15 @@ check("display-only AMD iGPUs (< 8 CUs) are excluded while APUs and discrete car
 
 igpu_big_gtt = {"vendor": "amd", "family": "amd-gfx1103", "render_node": "/dev/dri/renderD128", "unified": True, "memory_gib": 54.4}
 dgpu_card = {"vendor": "amd", "family": "amd-gfx1100", "render_node": "/dev/dri/renderD129", "unified": False, "memory_gib": 24.0}
+dual_amd = {"platform": "x86", "ram_gib": 64, "ram_class": 64, "gpus": [igpu_big_gtt, dgpu_card]}
 check("a discrete GPU outranks an integrated GPU even when GTT exceeds VRAM",
-      a.choose_gpu({"platform": "x86", "ram_gib": 64, "ram_class": 64, "gpus": [igpu_big_gtt, dgpu_card]}) == dgpu_card)
+      a.choose_gpu(dual_amd) == dgpu_card)
+small_img = {"kind": "image", "variant": [{"peak_ram_gib": 11, "peak_gpu_gib": 11}]}
+big_vid = {"kind": "video", "variant": [{"peak_ram_gib": 38, "peak_gpu_gib": 38}]}
+amd_rt = {"gpus": ["amd"]}
+check("recipe_gpu prefers a discrete GPU when it fits, and falls back to a larger fitting integrated GPU",
+      a.recipe_gpu(dual_amd, small_img, runtime=amd_rt) == dgpu_card
+      and a.recipe_gpu(dual_amd, big_vid, runtime=amd_rt) == igpu_big_gtt)
 pair_gpu = {"vendor": "nvidia", "family": "nvidia-gb10-pair", "nodes": 2, "unified": True, "memory_gib": 120}
 check("a paired unified GPU still outranks a single discrete GPU",
       a.choose_gpu({"platform": "aarch64-gb10", "ram_gib": 120, "ram_class": 128, "gpus": [dgpu_card, pair_gpu]}) == pair_gpu)

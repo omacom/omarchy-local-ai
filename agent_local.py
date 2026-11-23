@@ -463,10 +463,11 @@ def choose_gpu(profile, family=None):
   return best
 
 
-def recipe_gpu(profile, recipe, family=None, runtime=None):
+def recipe_gpu(profile, recipe, family=None, runtime=None, ctx=None):
   """The GPU a recipe runs on here: the one named, else the best of this machine's GPUs its
-  runtime runs on (a pair machine still runs single-node recipes on its own GPU, and a CPU
-  runtime runs on CPU even without a supported GPU)."""
+  runtime runs on that fits a variant (a pair machine still runs single-node recipes on its own
+  GPU, a CPU runtime runs on CPU even without a supported GPU, and when none fits it falls back
+  to the highest-ranked matching GPU so the caller reports that shortfall)."""
   if family:
     return choose_gpu(profile, family)
   if runtime is not None:
@@ -479,6 +480,16 @@ def recipe_gpu(profile, recipe, family=None, runtime=None):
     if not matches and "cpu" in measured:
       return cpu_device(profile)
   if matches:
+    if recipe.get("variant"):
+      fitting = []
+      for gpu in matches:
+        try:
+          if pick_variant(recipe, profile, gpu, ctx)[0] is not None:
+            fitting.append(gpu)
+        except LocalError:
+          pass
+      if fitting:
+        return max(fitting, key=gpu_rank)
     return max(matches, key=gpu_rank)
   return choose_gpu(profile)
 
@@ -3431,15 +3442,16 @@ def cmd_use(argv):
   if args.kind is not None and args.target != "best":
     raise LocalError(f"A kind goes with best: omarchy models use best {args.kind}")
   if args.target == "best":
-    rid, variant, skipped = resolve_best(catalog, profile, gpu, args.ctx if args.kind == "text" else None, field=BEST_FIELDS[args.kind])
-    gpu = recipe_gpu(profile, catalog.recipes[rid], args.gpu, catalog.runtimes.get(catalog.recipes[rid].get("runtime")))
+    best_ctx = args.ctx if args.kind == "text" else None
+    rid, variant, skipped = resolve_best(catalog, profile, gpu, best_ctx, field=BEST_FIELDS[args.kind])
+    gpu = recipe_gpu(profile, catalog.recipes[rid], args.gpu, catalog.runtimes.get(catalog.recipes[rid].get("runtime")), best_ctx)
     for skipped_id, reason in skipped:
       say(f"Skipping {skipped_id}: {reason}")
     say(f"Best {args.kind} model for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")
   else:
     rid = args.target
     recipe = _lookup_recipe(catalog, rid)
-    gpu = recipe_gpu(profile, recipe, args.gpu, catalog.runtimes.get(recipe.get("runtime")))
+    gpu = recipe_gpu(profile, recipe, args.gpu, catalog.runtimes.get(recipe.get("runtime")), args.ctx)
     variant, reason = compatibility(catalog, rid, profile, gpu, args.ctx)
     if variant is None:
       raise LocalError(f"{rid} can't run on this machine: {reason}")
