@@ -388,6 +388,7 @@ rt["inputs"]["alias"] = {"env": "MODEL_ALIAS"}
 rt["health"]["probe"] = ["probe", hostile]
 roles = {"model": hostile}
 text = a.render_container("model", changed, rt, variant, roles, gpu, "a" * 16)
+check("unit stops with graphical-session without blocking compositor teardown", "PartOf=graphical-session.target\n" in text and "After=graphical-session.target\n" not in text)
 check("server args escape systemd substitutions, quotes and backslashes", '"50%% $$HOME \\"quoted space\\" \\\\tail"' in text)
 check("probe escapes substitutions while retaining JSON argv", "HealthCmd=" + json.dumps(["probe", hostile]).replace("%", "%%").replace("$", "$$") in text)
 # Map model through env to pass the same hostile value through Environment=.
