@@ -151,7 +151,8 @@ static std::string random_hex_id() {
     return std::string(buf, 16);
 }
 
-static std::string encode_mp3_planar(const float* samples, int n_samp, int n_ch, int sample_rate, int bitrate_kbps) {
+static std::string encode_mp3_planar(const float* samples, int n_samp, int n_ch, int sample_rate,
+                                     int bitrate_kbps, const std::atomic<bool>& cancelled) {
     if (!samples || n_samp <= 0 || n_ch < 1) {
         throw std::runtime_error("no audio samples produced");
     }
@@ -183,6 +184,9 @@ static std::string encode_mp3_planar(const float* samples, int n_samp, int n_ch,
     out.reserve(static_cast<size_t>(n_samp) * static_cast<size_t>(bitrate_kbps) / (8 * sample_rate) + 16384);
 
     for (int pos = 0; pos < n_samp; pos += kChunk) {
+        if (cancelled.load(std::memory_order_acquire)) {
+            throw std::runtime_error("generation cancelled");
+        }
         const int take = std::min(kChunk, n_samp - pos);
         for (int i = 0; i < take; ++i) {
             float l = left[pos + i];
@@ -484,7 +488,7 @@ public:
         auto it = jobs_.find(id);
         if (it == jobs_.end()) return false;
         auto& job = it->second;
-        job->cancelled.store(true, std::memory_order_relaxed);
+        job->cancelled.store(true, std::memory_order_release);
         if (job->status == "queued") {
             auto qit = std::find(pending_queue_.begin(), pending_queue_.end(), id);
             if (qit != pending_queue_.end()) pending_queue_.erase(qit);
@@ -502,7 +506,7 @@ public:
             std::lock_guard<std::mutex> lk(mu_);
             stopping_ = true;
             for (auto& kv : jobs_) {
-                kv.second->cancelled.store(true, std::memory_order_relaxed);
+                kv.second->cancelled.store(true, std::memory_order_release);
             }
             pending_queue_.clear();
         }
@@ -601,13 +605,17 @@ private:
                 body += "--\r\n";
 
                 std::lock_guard<std::mutex> lk(mu_);
-                job->result = std::move(body);
-                job->content_type = std::string("multipart/mixed; boundary=") + kBoundary;
-                job->status = "done";
+                if (job->cancelled.load(std::memory_order_acquire)) {
+                    job->status = "cancelled";
+                } else {
+                    job->result = std::move(body);
+                    job->content_type = std::string("multipart/mixed; boundary=") + kBoundary;
+                    job->status = "done";
+                }
                 job->finished_at = std::chrono::steady_clock::now();
                 prune_locked();
             } catch (const std::exception& exc) {
-                const bool was_cancelled = job->cancelled.load(std::memory_order_relaxed) ||
+                const bool was_cancelled = job->cancelled.load(std::memory_order_acquire) ||
                                            std::string(exc.what()).find("cancelled") != std::string::npos;
                 if (!was_cancelled) {
                     std::fprintf(stderr, "error: synth job %s failed: %s\n", job->id.c_str(), exc.what());
@@ -678,7 +686,8 @@ private:
         }
 
         const int n_samp = std::min(res.n_samp, target_n_samp);
-        std::string mp3 = encode_mp3_planar(res.samples.data(), n_samp, res.n_ch, res.sample_rate, params.mp3_bitrate);
+        std::string mp3 = encode_mp3_planar(res.samples.data(), n_samp, res.n_ch, res.sample_rate,
+                                            params.mp3_bitrate, cancelled);
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::fprintf(stderr, "synth: %.0fs audio in %.2fs (%.2fx realtime, seed=%llu, chunk=%d)\n",
                      params.duration, elapsed, params.duration / std::max(elapsed, 0.01),

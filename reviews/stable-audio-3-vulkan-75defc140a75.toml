@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:2a87198b36690906bb4d3c5af2d2979c05ac04f6c039f28f9693f2ec1ef8e9a1"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:75defc140a75c68ce512197116a5dfbe562dc18888e197b79aef6c0135cb3fbf"
 publisher = "Omacom (built from images/stable-audio-3-vulkan: betweentwomidnights/sa3.cpp 2af7f674 + metadata-only load patch + sa3-server)"
 reviewer = "Antigravity for David Heinemeier Hansson"
 date = "2026-11-23"

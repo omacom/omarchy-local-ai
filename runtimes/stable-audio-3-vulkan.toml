@@ -5,9 +5,9 @@
 # render node only, no ROCm. Loads each stage (T5Gemma, DiT, SAME-L decoder) only while a song
 # needs it and releases the Vulkan backend after every render, holding 0 GiB GPU memory between
 # songs, and is checked by the models it found (api = "sa3").
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:2a87198b36690906bb4d3c5af2d2979c05ac04f6c039f28f9693f2ec1ef8e9a1"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:75defc140a75c68ce512197116a5dfbe562dc18888e197b79aef6c0135cb3fbf"
 tier = "third-party"
-review = "reviews/stable-audio-3-vulkan-2a87198b3669.toml"
+review = "reviews/stable-audio-3-vulkan-75defc140a75.toml"
 api = "sa3"
 port = 8085
 command = ["sa3-server", "--host", "0.0.0.0", "--port", "8085"]
