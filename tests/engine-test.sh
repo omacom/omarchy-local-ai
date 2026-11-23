@@ -1770,6 +1770,29 @@ check("an installing instrumental music recipe keeps vocals = False",
       sa3_inst_rec.get("vocals") is False and sa3_inst_row.get("vocals") is False, repr((sa3_inst_rec, sa3_inst_row)))
 a.clear_installing("sa3-song")
 
+# Vulkan Stable Audio 3 runtime for AMD GPUs: render node, tmpfs, api = "sa3", multi-artifact dir.
+sa3_vk_rt = {"image": "registry.example/test/sa3-vulkan@sha256:" + "e" * 64, "tier": "omarchy", "api": "sa3", "port": 8085,
+             "health": {"probe": ["curl", "http://127.0.0.1:8085/health"]}, "command": ["sa3-server"],
+             "reserved": ["--port", "SA3_API_KEY"], "run": {"devices": ["render"], "group_add": "keep-groups", "tmpfs": "/tmp"},
+             "gpus": ["amd"], "inputs": {"model": {"arg": "--models"}, "key": {"env": "SA3_API_KEY"}}}
+sa3_vk_variant = {"peak_ram_gib": 4, "peak_gpu_gib": 4}
+sa3_vk_song = {"name": "Stable Audio 3 Medium", "vendor": "stability", "kind": "music", "vocals": False, "runtime": "sa3-vulkan",
+               "hardware": [{"gpu": "amd-strix-halo", "ram_class": 192, "measured": "measurements/model.toml"}],
+               "artifacts": [
+                 {"repo": "test/sa3-m", "revision": "a" * 40, "license": "other", "files": ["dit.gguf", "same.gguf"], "dest": "sa3", "model": "."},
+                 {"repo": "test/t5gemma", "revision": "b" * 40, "license": "gemma", "files": ["t5.gguf", "vocab.gguf"], "dest": "sa3"},
+               ],
+               "variant": [sa3_vk_variant]}
+check("an AMD Vulkan sa3 runtime and multi-artifact instrumental recipe validate",
+      not a.validate_runtime("sa3-vulkan", sa3_vk_rt) and not a.validate_recipe("sa3-vk-song", sa3_vk_song, {"sa3-vulkan": sa3_vk_rt}),
+      "\n".join(a.validate_runtime("sa3-vulkan", sa3_vk_rt) + a.validate_recipe("sa3-vk-song", sa3_vk_song, {"sa3-vulkan": sa3_vk_rt})))
+amd_profile = {"platform": "x86", "ram_class": 192, "ram_gib": 188,
+               "gpus": [{"vendor": "amd", "family": "amd-strix-halo", "render_node": "/dev/dri/renderD128",
+                         "vram_gib": 0.5, "gtt_gib": 180, "unified": True, "memory_gib": 180.5, "max_memory_gib": 180.5, "sysfs": ""}]}
+sa3_vk_unit = a.render_container("sa3-vk-song", sa3_vk_song, sa3_vk_rt, sa3_vk_variant, {"model": "sa3"}, amd_profile["gpus"][0], "e" * 16)
+check("an AMD Vulkan sa3 container unit mounts the render node and tmpfs",
+      "AddDevice=/dev/dri/renderD128" in sa3_vk_unit and "Tmpfs=/tmp" in sa3_vk_unit and "--models" in sa3_vk_unit)
+
 
 # A runtime's warm-up: a malformed one is refused; one prompt of the model's own vocabulary goes
 # out with the key, nothing is sent without a tokenizer, and a failure doesn't fail the start.

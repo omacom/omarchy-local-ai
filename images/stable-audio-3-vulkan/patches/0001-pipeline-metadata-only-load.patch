@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Omarchy <omarchy@omacom.io>
+Date: Mon, 23 Nov 2026 16:00:00 +0100
+Subject: [PATCH] pipeline: read GGUF metadata without uploading weights during load()
+
+Pipeline::load() only reads model config metadata (T5GemmaConfig, DitConfig,
+SameConfig, plus the 4-byte ae.running_std scalar) and immediately frees every
+weight buffer before returning. Reading GGUF headers with no_alloc avoids
+uploading ~3.6 GB of weights to the GPU only to discard them, cutting cold
+startup and frugal per-request latency by ~2 seconds while holding zero GPU
+memory before generation begins.
+---
+ src/gguf_model.h   | 27 ++++++++++++++++++++++++++-
+ src/sa3_pipeline.h | 23 +++++++----------------
+ 2 files changed, 33 insertions(+), 17 deletions(-)
+
+diff --git i/src/gguf_model.h w/src/gguf_model.h
+index 03557b0..14d9caa 100644
+--- i/src/gguf_model.h
++++ w/src/gguf_model.h
+@@ -206,6 +206,7 @@ struct GgufModel {
+     ggml_backend_buffer_t buf     = nullptr;
+     std::map<std::string, ggml_tensor*> tensors;
+     std::map<std::string, ggml_tensor*> overrides;   // LoRA-effective weights (see lora.h)
++    std::string           meta_path;                 // file path when opened metadata-only
+ 
+     GgufModel() = default;
+     ~GgufModel() { free(); }
+@@ -266,6 +267,18 @@ struct GgufModel {
+     }
+     // read a single-element tensor's value to the host
+     float scalar(const std::string& n) const {
++        if (!ctx && gguf && !meta_path.empty()) {
++            const int idx = gguf_find_tensor(gguf, n.c_str());
++            if (idx < 0) throw gguf_error("missing tensor: " + n);
++            const uint64_t off = (uint64_t)gguf_get_data_offset(gguf) + (uint64_t)gguf_get_tensor_offset(gguf, idx);
++            std::unique_ptr<FILE, int(*)(FILE*)> f(ggml_fopen(meta_path.c_str(), "rb"), fclose);
++            if (!f || !gguf_file_seek(f.get(), off))
++                throw gguf_error("cannot read scalar " + n + " from " + meta_path);
++            float v = 0.0f;
++            if (fread(&v, sizeof(float), 1, f.get()) != 1)
++                throw gguf_error("short read for scalar " + n + " in " + meta_path);
++            return v;
++        }
+         float v = 0.0f;
+         ggml_backend_tensor_get(get(n), &v, 0, sizeof(float));
+         return v;
+@@ -277,7 +290,7 @@ struct GgufModel {
+         if (ctx)     ggml_free(ctx);
+         if (backend && owns_backend) ggml_backend_free(backend);
+         buf = nullptr; gguf = nullptr; ctx = nullptr; backend = nullptr;
+-        tensors.clear(); overrides.clear(); owns_backend = true;
++        tensors.clear(); overrides.clear(); meta_path.clear(); owns_backend = true;
+     }
+ 
+ private:
+@@ -289,6 +302,7 @@ private:
+         buf = other.buf;
+         tensors = std::move(other.tensors);
+         overrides = std::move(other.overrides);
++        meta_path = std::move(other.meta_path);
+ 
+         other.ctx = nullptr;
+         other.gguf = nullptr;
+@@ -300,6 +314,17 @@ private:
+     }
+ };
+ 
++// Read only GGUF metadata headers (no tensor allocations or backend uploads).
++inline GgufModel load_gguf_meta(const char* path) {
++    GgufModel m;
++    m.owns_backend = false;
++    m.meta_path = path;
++    gguf_init_params gp = { /*no_alloc=*/true, /*ctx=*/nullptr };
++    m.gguf = gguf_init_from_file(path, gp);
++    if (!m.gguf) throw gguf_error("failed to open " + std::string(path));
++    return m;
++}
++
+ // Load a GGUF into the given backend (CPU if null). Reads tensor data straight
+ // from the file at the offsets gguf reports.
+ inline GgufModel load_gguf(const char* path, ggml_backend_t backend = nullptr) {
+diff --git i/src/sa3_pipeline.h w/src/sa3_pipeline.h
+index f2ff5f6..efbb0e1 100644
+--- i/src/sa3_pipeline.h
++++ w/src/sa3_pipeline.h
+@@ -1051,24 +1051,15 @@ inline void Pipeline::load(const ModelPaths& paths, int cpu_threads, const char*
+     backend_ = make_backend(cpu_threads, device);
+     tok_ = Tokenizer::load(paths_.tok.c_str());
+ 
+-    // Load each model ONE AT A TIME to read config, then free GPU memory immediately.
+-    // Peak VRAM during startup = max(model_size) ≈ 3.0 GB (DiT) — fits 4 GB.
+-    // The old code loaded ALL 4 models simultaneously (~5.8 GB), OOMing on small cards.
+-    TE_  = load_gguf(paths_.t5.c_str(),   backend_);
+-    tc_  = T5GemmaConfig::from(TE_);
+-    TE_.free();
+-
+-    DIT_ = load_gguf(paths_.dit.c_str(),  backend_);
+-    dc_  = DitConfig::from(DIT_);
+-    DIT_.free();
+-
+-    AE_  = load_gguf(paths_.same.c_str(), backend_);
+-    sc_  = SameConfig::from(AE_);
+-    AE_.free();
++    // Read each GGUF's metadata header without uploading weights to the GPU.
++    { GgufModel te = load_gguf_meta(paths_.t5.c_str()); tc_ = T5GemmaConfig::from(te); }
++    { GgufModel dit = load_gguf_meta(paths_.dit.c_str()); dc_ = DitConfig::from(dit); }
++    { GgufModel ae = load_gguf_meta(paths_.same.c_str()); sc_ = SameConfig::from(ae); }
+ 
+     if (!paths_.cond.empty()) {
+-        CD_ = std::make_unique<GgufModel>(load_gguf(paths_.cond.c_str(), backend_));
+-        CD_->free();
++        // Validate the conditioner sidecar exists; generate() loads it on demand.
++        GgufModel cd = load_gguf_meta(paths_.cond.c_str());
++        (void)cd;
+     }
+ 
+     nets_resident_ = false;   // no weight tensors resident — generate() loads per phase

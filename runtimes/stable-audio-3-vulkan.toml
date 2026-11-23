@@ -1,0 +1,23 @@
+# Stable Audio 3 Vulkan server (betweentwomidnights/sa3.cpp) built for AMD GPUs from
+# images/stable-audio-3-vulkan with one patch (metadata-only load to avoid uploading weights
+# twice) plus sa3-server.cpp (ace-server's async job protocol with constant-time Bearer auth
+# from SA3_API_KEY / --api-key-file and in-memory libmp3lame MP3 encoding). Vulkan on the
+# render node only, no ROCm. Loads each stage (T5Gemma, DiT, SAME-L decoder) only while a song
+# needs it and releases the Vulkan backend after every render, holding 0 GiB GPU memory between
+# songs, and is checked by the models it found (api = "sa3").
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:2a87198b36690906bb4d3c5af2d2979c05ac04f6c039f28f9693f2ec1ef8e9a1"
+tier = "third-party"
+review = "reviews/stable-audio-3-vulkan-2a87198b3669.toml"
+api = "sa3"
+port = 8085
+command = ["sa3-server", "--host", "0.0.0.0", "--port", "8085"]
+health = { probe = ["/bin/sh", "-c", "curl -fsS -H \"Authorization: Bearer $OMARCHY_LOCAL_KEY\" http://127.0.0.1:8085/health"] }
+# It writes nothing outside /tmp, where Mesa caches compiled Vulkan shaders.
+run = { devices = ["render"], group_add = "keep-groups", tmpfs = "/tmp" }
+# Optimized for AMD GPUs via Mesa RADV Vulkan (KHR_coopmat).
+gpus = ["amd"]
+reserved = ["--host", "--port", "--api-key", "--api-key-file", "SA3_API_KEY"]
+
+[inputs]
+model = { arg = "--models" }
+key = { env = "SA3_API_KEY" }

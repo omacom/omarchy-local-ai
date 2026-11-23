@@ -1,0 +1,17 @@
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:2a87198b36690906bb4d3c5af2d2979c05ac04f6c039f28f9693f2ec1ef8e9a1"
+publisher = "Omacom (built from images/stable-audio-3-vulkan: betweentwomidnights/sa3.cpp 2af7f674 + metadata-only load patch + sa3-server)"
+reviewer = "Antigravity for David Heinemeier Hansson"
+date = "2026-11-23"
+version = "sa3.cpp 2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d + patch 0001 (metadata-only load) + sa3-server (Vulkan, libmp3lame)"
+source = "open (MIT), https://github.com/betweentwomidnights/sa3.cpp; image recipe images/stable-audio-3-vulkan in https://github.com/omacom/omarchy-local-ai"
+license_url = "https://raw.githubusercontent.com/betweentwomidnights/sa3.cpp/2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d/LICENSE"
+license_sha256 = "522b5a432d43a08a760e8da70e9c3759ee9c09aceb504881b2a79e0c74570498"
+checked = [
+  "license: sa3.cpp is MIT (the LICENSE at 2af7f674 hashes as above); its ggml submodule (e3db5210) is MIT; vendored cpp-httplib, yyjson, signalsmith-linear and signalsmith-stretch are MIT and ship their texts in /usr/share/licenses/sa3.cpp; dynamically links Arch's libmp3lame (LGPL-2.0-or-later); model weights arrive separately at runtime under the Stability AI Community License and Gemma Terms of Use",
+  "build: images/stable-audio-3-vulkan's Containerfile builds betweentwomidnights/sa3.cpp at commit 2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d with patch 0001 and sa3-server.cpp on docker.io/library/archlinux@sha256:fcee73ea1b96e236248f53a213f71276cc9072d9025b58bce9915e32f19963ae with -DSA3_VULKAN=ON -DGGML_NATIVE=OFF (verified zero AVX-512 %zmm instructions in /usr/bin/sa3-server) and Mesa vulkan-radeon + vulkan-intel (Vulkan only, no ROCm)",
+  "behavior: discovers DiT, SAME-L decoder, T5Gemma text encoder, tokenizer and conditioner GGUFs under --models, defaults SA3_FLASH_ATTN=1 and SA3_SAME_FLASH_ATTN=0 with automatic 680-frame chunked SAME-L decoding for tracks over ~63 s, runs each stage sequentially and releases the Vulkan backend after every render; carries no model weights",
+  "acceptance (2026-11-23): serves with a read-only root, tmpfs at /tmp (XDG_CACHE_HOME=/tmp/cache for Mesa shader cache), all capabilities dropped, no-new-privileges and only the render node (Vulkan/RADV with KHR_coopmat on HP ZBook Ultra G3a, AMD Ryzen AI Max+ PRO 495 w/ Radeon 8065S, 192 GB), rendering a 60 s song in 5.1 s (11.8x realtime) and a 180 s song in 13.6 s (13.3x realtime) to 192 kbit/s stereo MP3 at 2.83 GiB peak GTT GPU memory (0.00 GiB GPU idle between songs, 0.25 GiB peak container RAM)",
+  "acceptance (2026-11-23): with --network none outbound connections fail (DNS fails)",
+  "acceptance (2026-11-23): rejects requests without or with a wrong key (401) and serves them with the right key (200) on /health and /props",
+  "acceptance (2026-11-23): cancels an in-flight 180 s synthesis job cleanly in 0.68 s and stops on SIGTERM in 0.22 s with status 0",
+]

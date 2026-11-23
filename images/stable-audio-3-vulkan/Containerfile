@@ -1,0 +1,50 @@
+# sa3.cpp's Stable Audio 3 pipeline, built with Vulkan for AMD GPUs, as
+# omarchy-local-ai runs it. Built from betweentwomidnights/sa3.cpp at a pinned
+# commit with one patch (metadata-only load to avoid uploading weights twice)
+# plus sa3-omarchy-server.cpp (ace-server's async job protocol with Bearer key
+# auth from SA3_API_KEY / --api-key-file and in-process libmp3lame MP3 encoding).
+# Everything is from Arch Linux's packages at the pinned base.
+
+ARG BASE=docker.io/library/archlinux@sha256:fcee73ea1b96e236248f53a213f71276cc9072d9025b58bce9915e32f19963ae
+
+FROM ${BASE} AS build
+RUN pacman -Syu --noconfirm --needed base-devel cmake git vulkan-headers vulkan-icd-loader shaderc spirv-headers lame
+ARG COMMIT=2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d
+RUN git clone https://github.com/betweentwomidnights/sa3.cpp /src \
+ && git -C /src checkout --quiet "$COMMIT" \
+ && git -C /src submodule update --quiet --init --recursive
+COPY patches/ /patches/
+COPY sa3-server.cpp /src/tools/sa3-omarchy-server.cpp
+# ggml's CPU code is built for any x86-64 with AVX2, not the builder's own CPU: one built
+# with AVX-512 dies on an illegal instruction on older CPUs before the GPU is reached.
+RUN git -C /src apply /patches/*.patch \
+ && printf '\nadd_executable(sa3-omarchy-server tools/sa3-omarchy-server.cpp vendor/cpp-httplib/httplib.cpp vendor/yyjson/yyjson.c)\ntarget_link_libraries(sa3-omarchy-server PRIVATE sa3 Threads::Threads mp3lame)\ntarget_include_directories(sa3-omarchy-server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-httplib ${CMAKE_CURRENT_SOURCE_DIR}/vendor/yyjson)\n' >> /src/CMakeLists.txt \
+ && cmake -S /src -B /build \
+      -DSA3_VULKAN=ON \
+      -DGGML_NATIVE=OFF \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_TESTING=OFF \
+      -DCMAKE_BUILD_TYPE=Release \
+ && cmake --build /build --target sa3-omarchy-server -j"$(nproc)"
+# The licenses of sa3.cpp, ggml and the third-party code built in.
+RUN mkdir -p /licenses \
+ && cd /src \
+ && find . -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -print \
+    | while read -r file; do install -Dm644 "$file" "/licenses/${file#./}"; done
+
+FROM ${BASE}
+# The Vulkan loader and Mesa's RADV and ANV drivers; lame for libmp3lame; curl for the health probe.
+RUN pacman -Syu --noconfirm --needed vulkan-icd-loader vulkan-radeon vulkan-intel lame curl \
+ && pacman -Scc --noconfirm
+COPY --from=build /build/bin/sa3-omarchy-server /usr/bin/sa3-server
+COPY --from=build /licenses /usr/share/licenses/sa3.cpp
+COPY patches/ /usr/share/doc/sa3.cpp/patches/
+
+# Keep Mesa's Vulkan shader cache inside the container's writable /tmp under read-only root.
+ENV XDG_CACHE_HOME=/tmp/cache
+
+LABEL org.opencontainers.image.source="https://github.com/omacom/omarchy-local-ai"
+LABEL org.opencontainers.image.description="Stable Audio 3 (sa3.cpp) Vulkan server for omarchy-local-ai"
+LABEL org.opencontainers.image.licenses="MIT"
+EXPOSE 8085
+CMD ["sa3-server", "--host", "0.0.0.0", "--port", "8085", "--models", "/models"]

@@ -1,0 +1,32 @@
+recipe = "stable-audio-3-medium-vulkan"
+measured_at = "2026-11-23"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:2a87198b36690906bb4d3c5af2d2979c05ac04f6c039f28f9693f2ec1ef8e9a1"
+load_seconds = 0.2
+method = "a 60 s and a 180 s instrumental track through /synth on the containerised sa3-server (sa3.cpp Vulkan/RADV with KHR_coopmat, SA3_FLASH_ATTN=1, SA3_SAME_FLASH_ATTN=0, 8 steps, Q8_0 DiT + F16 SAME-L decoder + F16 T5Gemma, 680-frame chunked decode above 63 s) to 192 kbit/s stereo MP3 via libmp3lame; GPU memory from the GTT counter delta every 0.2 s, container RAM from podman stats"
+
+[machine]
+platform = "x86"
+gpu = "amd-strix-halo"
+ram_class = 192
+system = "HP HP ZBook Ultra G3a 16 inch Mobile Workstation PC"
+kernel = "7.2.15-4-omarchy"
+cpu = "AMD Ryzen AI Max+ PRO 495 w/ Radeon 8065S"
+
+[memory]
+observed_at_load_gib = 0.0
+peak_ram_gib = 0.25
+idle_after_render_gib = 0.19
+total_gib = 188.0
+peak_gpu_gib = 2.83
+
+[music]
+song_60s_rendered_s = 5.1
+song_180s_rendered_s = 13.6
+
+[[artifacts]]
+repo = "thepatch/stable-audio-3-medium-GGUF"
+revision = "380a7b25ba6b3b12563b01193227580a9ae7dac0"
+
+[[artifacts]]
+repo = "thepatch/t5gemma-b-b-ul2-GGUF"
+revision = "26caadf5cb1b6523370caff61f6a32337f46625e"

@@ -47,12 +47,12 @@ jobs:
         run: |
           # Where each image runs decides the runner it's built on; the check runs in the built image.
           declare -A runner=(
-            [llamacpp]=ubuntu-latest [sdcpp]=ubuntu-latest [acestep]=ubuntu-latest
+            [llamacpp]=ubuntu-latest [sdcpp]=ubuntu-latest [acestep]=ubuntu-latest [stable-audio-3-vulkan]=ubuntu-latest
             [sdcpp-cuda]=ubuntu-24.04-arm [acestep-cuda]=ubuntu-24.04-arm [stable-audio-3-cuda]=ubuntu-24.04-arm [tensorfold]=ubuntu-24.04-arm
             [tensorfold-dsv41]=ubuntu-24.04-arm [tensorfold-glm53]=ubuntu-24.04-arm [tensorfold-nemotron-bolt]=ubuntu-24.04-arm [llamacpp-hy4]=ubuntu-24.04-arm [inkling2-exl3]=ubuntu-24.04-arm
           )
           declare -A check=(
-            [llamacpp]="llama-server --version" [sdcpp]="command -v sd-server" [acestep]="command -v ace-server"
+            [llamacpp]="llama-server --version" [sdcpp]="command -v sd-server" [acestep]="command -v ace-server" [stable-audio-3-vulkan]="command -v sa3-server && sa3-server --help >/dev/null 2>&1"
             [sdcpp-cuda]="command -v sd-server" [acestep-cuda]="command -v ace-server" [stable-audio-3-cuda]="command -v sa3-server" [tensorfold]="command -v tensorfold-native"
             [tensorfold-dsv41]="command -v tensorfold-native" [tensorfold-glm53]="command -v tensorfold-native"
             [tensorfold-nemotron-bolt]="command -v tensorfold-native" [llamacpp-hy4]="command -v llama-server" [inkling2-exl3]="command -v serve && python3 -c 'import exllamav3, fastapi, transformers'"
@@ -176,12 +176,16 @@ jobs:
       # The runner's own CPU may have AVX-512, so running the server here proves nothing about
       # the laptops it ships to: its code must stop at AVX2.
       - name: Check the server runs on any x86-64 with AVX2
-        if: matrix.name == 'sdcpp' || matrix.name == 'acestep'
+        if: matrix.name == 'sdcpp' || matrix.name == 'acestep' || matrix.name == 'stable-audio-3-vulkan'
         env:
           TAG: ${{ steps.name.outputs.tag }}
           NAME: ${{ matrix.name }}
         run: |
-          [[ $NAME == "sdcpp" ]] && server=sd-server || server=ace-server
+          case "$NAME" in
+            sdcpp)                 server=sd-server ;;
+            acestep)               server=ace-server ;;
+            stable-audio-3-vulkan) server=sa3-server ;;
+          esac
           container=$(podman create "$TAG")
           podman cp "$container:/usr/bin/$server" "$RUNNER_TEMP/$server"
           podman rm "$container"
@@ -192,7 +196,7 @@ jobs:
 
       # The Vulkan images run on AMD and Intel GPUs alike, through Mesa's RADV and ANV.
       - name: Check the image carries Mesa's AMD and Intel drivers
-        if: matrix.name == 'llamacpp' || matrix.name == 'sdcpp' || matrix.name == 'acestep'
+        if: matrix.name == 'llamacpp' || matrix.name == 'sdcpp' || matrix.name == 'acestep' || matrix.name == 'stable-audio-3-vulkan'
         env:
           TAG: ${{ steps.name.outputs.tag }}
         run: podman run --rm --network none --entrypoint ls "$TAG" /usr/share/vulkan/icd.d/radeon_icd.json /usr/share/vulkan/icd.d/intel_icd.json

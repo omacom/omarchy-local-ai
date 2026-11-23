@@ -1,0 +1,44 @@
+# Stability AI's Stable Audio 3 Medium on sa3.cpp's Vulkan build for AMD GPUs (Mesa RADV):
+# 1.5B Q8_0 diffusion transformer, SAME-L FP16 audio decoder, F32 conditioner sidecar, and
+# shared T5Gemma 0.3B FP16 text encoder + vocab. Makes instrumental stereo music up to three
+# minutes long on the GPU with frugal per-stage offloading, automatic chunked decoding for
+# long tracks, and zero GPU memory held between songs.
+name = "Stable Audio 3 Medium"
+vendor = "stability"
+kind = "music"
+vocals = false
+runtime = "stable-audio-3-vulkan"
+# What a setup downloads: the five GGUF files pinned below, not the runtime image.
+download_gib = 3.57
+
+[[hardware]]
+gpu = "amd-strix-halo"
+ram_class = 192
+measured = "measurements/stable-audio-3-medium-vulkan-strix-halo-192.toml"
+
+[[artifacts]]
+repo = "thepatch/stable-audio-3-medium-GGUF"
+revision = "380a7b25ba6b3b12563b01193227580a9ae7dac0"
+license = "other (Stability AI Community License)"
+files = [
+  "stable-audio-3-medium-dit-1.5B-v1.0-Q8_0.gguf",
+  "stable-audio-3-medium-same-l-v1.0-F16.gguf",
+  "stable-audio-3-medium-conditioner-v1.0-F32.gguf",
+]
+dest = "sa3"
+model = "."
+
+[[artifacts]]
+repo = "thepatch/t5gemma-b-b-ul2-GGUF"
+revision = "26caadf5cb1b6523370caff61f6a32337f46625e"
+license = "gemma"
+files = [
+  "t5gemma-b-b-ul2-encoder-0.3B-v1.0-F16.gguf",
+  "t5gemma-b-b-ul2-v1.0-vocab.gguf",
+]
+dest = "sa3"
+
+# Measured: 2.83 GiB peak GPU (GTT) memory rendering a 180 s song in 13.6 s (60 s in 5.1 s); 0 GiB between songs.
+[[variant]]
+peak_ram_gib = 4
+peak_gpu_gib = 4
