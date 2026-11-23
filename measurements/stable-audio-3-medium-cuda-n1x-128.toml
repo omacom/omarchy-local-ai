@@ -1,6 +1,6 @@
 recipe = "stable-audio-3-medium-cuda"
 measured_at = "2026-11-23"
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:ed0391edbd07382b86066a29d2dbd5e11ca5d04d4150fe0bee816b58c610ab18"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:8d6feea59f8e5a62d227760b4d0bf68f13ae04707693e93da766aef78db68bd5"
 load_seconds = 2.0
 fileset = "35502b1b9d08eda2"
 method = "a 60 s and a 180 s instrumental track through /synth on the engine-run sa3-server (CUDA sm_121, 8 steps, medium FP16 DiT + SAME-L FP16 decoder + T5Gemma FP16 encoder, frugal per-stage offloading) to 192 kbit/s MP3; GPU memory from nvidia-smi compute apps every 0.2 s"

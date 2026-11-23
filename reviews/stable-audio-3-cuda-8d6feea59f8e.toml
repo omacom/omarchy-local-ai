@@ -1,4 +1,4 @@
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:ed0391edbd07382b86066a29d2dbd5e11ca5d04d4150fe0bee816b58c610ab18"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:8d6feea59f8e5a62d227760b4d0bf68f13ae04707693e93da766aef78db68bd5"
 publisher = "Omacom (built from images/stable-audio-3-cuda: betweentwomidnights/sa3.cpp 2af7f674 + sa3-server)"
 reviewer = "Antigravity for David Heinemeier Hansson"
 date = "2026-11-23"
@@ -14,5 +14,5 @@ checked = [
   "acceptance (2026-11-23): serves with a read-only root and a tmpfs at /tmp, all capabilities dropped (CapEff 0), no-new-privileges and the GPU through CDI on an N1x (128 GB, driver 615.78.08), rendering a 60 s song in 5.0 s (12.0x realtime) and a 180 s song in 13.5 s (13.3x realtime) to 192 kbit/s MP3 at 6.3 GiB peak GPU memory (~0.2 GiB idle CUDA context, 0 B written to /tmp)",
   "acceptance (2026-11-23): on the engine's internal network outbound connections fail (DNS fails)",
   "acceptance (2026-11-23): rejects requests without or with a wrong key (401) and serves them with the right key (200) on /health and /props",
-  "acceptance (2026-11-23): cancels an in-flight 180 s synthesis job cleanly in 0.45 s and stops on SIGTERM cleanly",
+  "acceptance (2026-11-23): cancels an in-flight 180 s synthesis job cleanly in 0.45 s, returns exit 1 on bind failure, and stops on SIGTERM cleanly",
 ]

@@ -3901,7 +3901,11 @@ def status_record(catalog, profile):
   for rid in installing_models():
     record = load_installing(rid)
     if record is not None and rid not in models:
-      models[rid] = install_row(rid, record)
+      row = install_row(rid, record)
+      cat = catalog.recipes.get(rid) or {}
+      if recipe_kind(cat) == "music" and "vocals" in cat:
+        row["vocals"] = bool(cat["vocals"])
+      models[rid] = row
   record = {
     "models": models,
     # Why sharing on the tailnet isn't working, for the panel to show.
@@ -4462,9 +4466,11 @@ def installing_models():
 def begin_installing(rid, recipe, load_seconds=None):
   """`load_seconds` is how long the catalog measured its start: the panel gives the
   download and the load that follows their shares of one bar from it."""
-  record = {"name": recipe.get("name", rid), "kind": recipe_kind(recipe), "vendor": recipe.get("vendor", ""), "phase": "waiting",
-            "done_bytes": 0, "total_bytes": 0, "rate_bytes_s": 0, "since_ms": int(time.time() * 1000), "error": "",
-            "expected_load_seconds": load_seconds}
+  kind = recipe_kind(recipe)
+  record = {"name": recipe.get("name", rid), "kind": kind, "vendor": recipe.get("vendor", ""),
+            **({"vocals": bool(recipe.get("vocals", True))} if kind == "music" else {}),
+            "phase": "waiting", "done_bytes": 0, "total_bytes": 0, "rate_bytes_s": 0,
+            "since_ms": int(time.time() * 1000), "error": "", "expected_load_seconds": load_seconds}
   write_atomic(installing_path(rid), json.dumps(record) + "\n")
   publish_installing(rid, record)
   return record
@@ -4508,6 +4514,7 @@ def install_row(rid, record):
     "fit_reason": "",
     "recipe": rid,
     "kind": record.get("kind", "text"),
+    **({"vocals": bool(record.get("vocals", True))} if record.get("kind") == "music" else {}),
     "name": record.get("name", rid),
     "vendor": record.get("vendor", ""),
     "runtime": "",

@@ -1764,6 +1764,11 @@ with patch.object(a, "http_status", side_effect=[(401, b""), (200, sa3_found)]):
   a.post_start_checks("sa3-song", "test-key", sa3_rt)
 with patch.object(a, "http_status", side_effect=[(401, b""), (200, b'{"models": {"dit": ["dit.gguf"]}}')]):
   raises("an sa3-server missing parts is refused", lambda: a.post_start_checks("sa3-song", "test-key", sa3_rt), "found no decoder, text_encoder, tokenizer model")
+sa3_inst_rec = a.begin_installing("sa3-song", sa3_song)
+sa3_inst_row = a.install_row("sa3-song", sa3_inst_rec)
+check("an installing instrumental music recipe keeps vocals = False",
+      sa3_inst_rec.get("vocals") is False and sa3_inst_row.get("vocals") is False, repr((sa3_inst_rec, sa3_inst_row)))
+a.clear_installing("sa3-song")
 
 
 # A runtime's warm-up: a malformed one is refused; one prompt of the model's own vocabulary goes

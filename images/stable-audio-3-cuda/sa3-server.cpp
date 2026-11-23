@@ -635,6 +635,9 @@ private:
         std::string mp3 = encode_mp3(result.samples, result.n_samples,
                                      result.n_channels, result.sample_rate,
                                      result.layout, params.mp3_bitrate);
+        if (cancel_flag.load(std::memory_order_acquire)) {
+            throw CancelledError{};
+        }
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::fprintf(stdout, "synth: %.0fs audio in %.2fs (%.2fx realtime, seed=%llu)\n",
                      params.duration, elapsed, params.duration / std::max(elapsed, 0.01),
@@ -699,12 +702,19 @@ private:
                 body += "--\r\n";
 
                 std::lock_guard<std::mutex> lk(mu_);
-                job->result = std::move(body);
-                job->content_type = std::string("multipart/mixed; boundary=") + BOUNDARY;
-                job->status = "done";
-                job->finished_at = std::chrono::steady_clock::now();
-                job->has_finished = true;
-                prune_locked();
+                if (job->cancel_requested.load(std::memory_order_acquire) || stopping_) {
+                    job->status = "cancelled";
+                    job->finished_at = std::chrono::steady_clock::now();
+                    job->has_finished = true;
+                    prune_locked();
+                } else {
+                    job->result = std::move(body);
+                    job->content_type = std::string("multipart/mixed; boundary=") + BOUNDARY;
+                    job->status = "done";
+                    job->finished_at = std::chrono::steady_clock::now();
+                    job->has_finished = true;
+                    prune_locked();
+                }
             } catch (const CancelledError&) {
                 std::lock_guard<std::mutex> lk(mu_);
                 job->status = "cancelled";
@@ -821,12 +831,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Block SIGTERM/SIGINT on all threads (including worker & HTTP pool) and handle
-    // them cleanly on a dedicated thread via sigwait.
+    // Block SIGTERM/SIGINT/SIGUSR1 on all threads (including worker & HTTP pool) and handle
+    // them cleanly on a dedicated thread via sigwait. SIGUSR1 is reserved for internal
+    // wake-up on listen failure so startup errors still return non-zero.
     sigset_t sigset;
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGTERM);
     sigaddset(&sigset, SIGINT);
+    sigaddset(&sigset, SIGUSR1);
     pthread_sigmask(SIG_BLOCK, &sigset, nullptr);
 
     Engine engine(cfg, api);
@@ -977,7 +989,7 @@ int main(int argc, char** argv) {
     std::atomic<bool> sig_stop{false};
     std::thread sig_thread([&] {
         int sig = 0;
-        if (sigwait(&sigset, &sig) == 0) {
+        if (sigwait(&sigset, &sig) == 0 && (sig == SIGTERM || sig == SIGINT)) {
             sig_stop.store(true, std::memory_order_release);
             engine.shutdown();
             svr.stop();
@@ -992,8 +1004,8 @@ int main(int argc, char** argv) {
 
     const bool ok = svr.listen(cfg.host, cfg.port);
     if (!sig_stop.load(std::memory_order_acquire)) {
-        // Trigger sigwait thread to exit cleanly on listen failure.
-        pthread_kill(sig_thread.native_handle(), SIGTERM);
+        // Wake sigwait thread with SIGUSR1 so listen failures return non-zero.
+        pthread_kill(sig_thread.native_handle(), SIGUSR1);
     }
     if (sig_thread.joinable()) sig_thread.join();
     engine.shutdown();
