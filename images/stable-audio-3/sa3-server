@@ -50,6 +50,8 @@ MAX_PROMPT_CHARS = 4096
 MAX_PENDING_JOBS = 8
 JOB_TTL_SECONDS = 600
 MAX_FINISHED_JOBS = 8
+REQUEST_TIMEOUT_SECONDS = 30
+MAX_CONNECTIONS = 32
 BOUNDARY = b"sa3-batch-boundary"
 
 
@@ -488,6 +490,7 @@ def make_handler(engine: Engine, api_key: str):
 
   class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = REQUEST_TIMEOUT_SECONDS
 
     def log_message(self, fmt, *args):
       pass
@@ -607,6 +610,27 @@ def main():
   class Server(http.server.ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+    request_queue_size = MAX_CONNECTIONS
+
+    def __init__(self, *a, **kw):
+      super().__init__(*a, **kw)
+      self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+
+    def process_request(self, request, client_address):
+      if not self._slots.acquire(blocking=False):
+        self.shutdown_request(request)
+        return
+      try:
+        super().process_request(request, client_address)
+      except BaseException:
+        self._slots.release()
+        raise
+
+    def process_request_thread(self, request, client_address):
+      try:
+        super().process_request_thread(request, client_address)
+      finally:
+        self._slots.release()
 
   server = Server((args.host, args.port), make_handler(engine, api_key))
 
