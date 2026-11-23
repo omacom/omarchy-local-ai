@@ -1,7 +1,7 @@
 recipe = "stable-audio-3-medium-vulkan"
 measured_at = "2026-11-23"
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:75defc140a75c68ce512197116a5dfbe562dc18888e197b79aef6c0135cb3fbf"
-load_seconds = 0.2
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-vulkan@sha256:91bf23cedb6916cc0fe35dcecc16f6ac1957d374aa7029c74691e3aebdd334e4"
+load_seconds = 0.1
 method = "a 60 s and a 180 s instrumental track through /synth on the containerised sa3-server (sa3.cpp Vulkan/RADV with KHR_coopmat, SA3_FLASH_ATTN=1, SA3_SAME_FLASH_ATTN=0, 8 steps, Q8_0 DiT + F16 SAME-L decoder + F16 T5Gemma, 680-frame chunked decode above 63 s) to 192 kbit/s stereo MP3 via libmp3lame; GPU memory from the GTT counter delta every 0.2 s, container RAM from podman stats"
 
 [machine]
@@ -20,8 +20,8 @@ total_gib = 188.0
 peak_gpu_gib = 2.83
 
 [music]
-song_60s_rendered_s = 5.1
-song_180s_rendered_s = 13.6
+song_60s_rendered_s = 6.3
+song_180s_rendered_s = 17.5
 
 [[artifacts]]
 repo = "thepatch/stable-audio-3-medium-GGUF"
