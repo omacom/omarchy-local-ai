@@ -1383,6 +1383,24 @@ with patch.dict(os.environ, {"HF_TOKEN": "hf_secret_value", "OMARCHY_LOCAL_AI_CA
 check("a detached setup never puts the token on a command line", not any("hf_secret_value" in arg for arg in argv) and "--setenv=HF_TOKEN" in argv and env["HF_TOKEN"] == "hf_secret_value")
 check("a detached setup gets the catalog as an absolute path", env["OMARCHY_LOCAL_AI_CATALOG"] == os.path.abspath("relative/catalog"))
 a.clear_installing(rid)
+detach_cat = SimpleNamespace(
+  recipes={"big-vid": dict(kind="video", runtime="amd-rt", hardware=[{"gpu": "amd-gfx1103", "ram_class": 64, "measured": "m.toml"}], variant=[{"ctx": 4096, "peak_ram_gib": 38, "peak_gpu_gib": 38}])},
+  runtimes={"amd-rt": {"gpus": ["amd"]}},
+  best={"class": [{"gpu": "amd-gfx1103", "ram_class": 64, "recipes": ["big-vid"], "videos": ["big-vid"]}]},
+)
+detach_prof = {"platform": "x86", "ram_gib": 64, "ram_class": 64, "gpus": [
+  {"vendor": "amd", "family": "amd-gfx1103", "render_node": "/dev/dri/renderD128", "unified": True, "memory_gib": 54.4},
+  {"vendor": "amd", "family": "amd-gfx1100", "render_node": "/dev/dri/renderD129", "unified": False, "memory_gib": 24.0},
+]}
+with patch.object(a, "load_catalog", return_value=detach_cat), patch.object(a, "machine_profile", return_value=detach_prof), \
+     patch.object(a, "load_measurement", return_value={}), patch.object(a, "raise_gpu_memory"), \
+     patch.object(a, "systemctl", return_value=SimpleNamespace(returncode=3)), patch.object(a, "load_model", return_value=None), \
+     patch.object(a.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as run:
+  a.cmd_use(["best", "video", "--detach"])
+  argv = run.call_args.args[0]
+check("use best --detach preserves the resolved GPU and variant context",
+      ["use", "big-vid", "--ctx", "4096", "--gpu", "amd-gfx1103"] == argv[-6:], " ".join(argv))
+a.clear_installing("big-vid")
 
 # Refresh shares one catalog/profile across both caches.
 with patch.object(a, "load_catalog", return_value=cat) as load, patch.object(a, "machine_profile", return_value=profile) as machine, patch.object(a, "known_models", return_value=[]), patch.object(a, "running_models", return_value=set()):

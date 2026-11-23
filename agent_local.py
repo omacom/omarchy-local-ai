@@ -3786,7 +3786,7 @@ def cmd_use(argv):
   # Before a detached setup leaves this process, so polkit can still ask in the user's session.
   raise_gpu_memory(variant, gpu, args.detach)
   if args.detach:
-    return detach_use(rid, args, catalog.recipes[rid], measured_load)
+    return detach_use(rid, args, catalog.recipes[rid], measured_load, gpu=gpu, variant=variant)
   # A first setup shows in the panel from now on: waiting for the lock, then
   # downloading, then loading once activate() writes its pending row.
   fresh = load_model(rid) is None
@@ -3822,7 +3822,7 @@ def cmd_use(argv):
     raise
 
 
-def detach_use(rid, args, recipe, measured_load=None):
+def detach_use(rid, args, recipe, measured_load=None, gpu=None, variant=None):
   """Run the setup as a transient user unit, so it outlives the panel or
   terminal that asked for it; its output goes to the journal."""
   unit = install_unit(rid)
@@ -3844,10 +3844,12 @@ def detach_use(rid, args, recipe, measured_load=None):
     if env.get(name):
       command.append(f"--setenv={name}")
   command += [entry, "use", rid]
-  if args.ctx:
-    command += ["--ctx", str(args.ctx)]
-  if args.gpu:
-    command += ["--gpu", args.gpu]
+  ctx = args.ctx or (variant.get("ctx") if variant else None)
+  if ctx:
+    command += ["--ctx", str(ctx)]
+  gpu_family = args.gpu or (gpu.get("family") if gpu and gpu.get("family") != "cpu" else None)
+  if gpu_family:
+    command += ["--gpu", gpu_family]
   if args.seed:
     command += ["--seed", os.path.abspath(args.seed)]
   result = subprocess.run(command, capture_output=True, text=True, env=env)
