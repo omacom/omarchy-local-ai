@@ -216,21 +216,22 @@ class Engine:
     duration = cls._clamp_duration(params.get("duration", 60))
     try:
       steps = max(1, min(32, int(params.get("steps", DEFAULT_STEPS))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
       steps = DEFAULT_STEPS
     try:
       cfg = float(params.get("cfg", 1.0))
       if not math.isfinite(cfg) or cfg <= 0:
         cfg = 1.0
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
       cfg = 1.0
     try:
       seed = int(params.get("seed", -1))
-    except (TypeError, ValueError):
+      seed = seed % (2**31) if seed >= 0 else -1
+    except (TypeError, ValueError, OverflowError):
       seed = -1
     try:
       bitrate = max(96, min(320, int(params.get("mp3_bitrate", DEFAULT_BITRATE))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
       bitrate = DEFAULT_BITRATE
     return {
       "prompt": prompt,
@@ -314,7 +315,7 @@ class Engine:
   def _clamp_duration(value) -> float:
     try:
       seconds = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
       seconds = 60.0
     if not math.isfinite(seconds) or seconds <= 0:
       seconds = 60.0
