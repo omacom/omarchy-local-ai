@@ -3238,13 +3238,17 @@ class Lock:
 # an older engine wrote run it through Omarchy's wrapper on the user manager's PATH, which needn't
 # hold Omarchy's bin; others name the path of whichever engine wrote them.
 UNIT_HOOK_RE = re.compile(r'^(Exec(?:StartPre|StartPost|StopPost)=-?)(?:"(?:[^"\\]|\\.)*"|/usr/bin/env \S+|\S+) (link-worker|status) ', re.M)
+# Older engines also ordered model units after graphical-session.target, which forced compositor
+# teardown to wait for container stop/removal on logout and shutdown.
+LEGACY_SESSION_ORDER_RE = re.compile(r'^After=graphical-session\.target\n?', re.M)
 
 
 def repair_unit_hooks(wait=True):
-  """Points the hooks of every model unit at this engine, whatever ran them before. A running
-  model keeps its unit as it started; the hooks apply from its next start or stop. Under the lock,
-  so a unit that use, update or remove is replacing is never written back; without wait it raises
-  LockBusy rather than waiting. Returns the models changed."""
+  """Points the hooks of every model unit at this engine and drops legacy session ordering that
+  serialized shutdown ahead of the compositor. A running model keeps its unit as it started; the
+  repaired unit applies from its next start or stop. Under the lock, so a unit that use, update or
+  remove is replacing is never written back; without wait it raises LockBusy rather than waiting.
+  Returns the models changed."""
   repaired = []
   with Lock(wait=wait):
     for rid in known_models():
@@ -3253,6 +3257,7 @@ def repair_unit_hooks(wait=True):
       if not text:
         continue
       fixed = UNIT_HOOK_RE.sub(lambda match: f"{match[1]}{_quote(ENGINE)} {match[2]} ", text)
+      fixed = LEGACY_SESSION_ORDER_RE.sub("", fixed)
       if fixed != text:
         write_atomic(path, fixed if fixed.endswith("\n") else fixed + "\n")
         repaired.append(rid)

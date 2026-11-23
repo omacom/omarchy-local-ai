@@ -504,6 +504,13 @@ for old in ("/usr/bin/env omarchy-models", "/usr/bin/env omarchy-agent-local", '
     second = a.repair_unit_hooks()
   check(f"an older unit's hooks through {old} are pointed at this engine once, and the rest left as it was",
         first == ["paired"] and second == [] and a._read(a.quadlet_path("paired")) == pair_text.strip() and reloaded.call_count == 1, repr((first, second)))
+# Older units also carried After=graphical-session.target; repair drops it once without altering anything else.
+a.write_atomic(a.quadlet_path("paired"), pair_text.replace("PartOf=graphical-session.target\n", "PartOf=graphical-session.target\nAfter=graphical-session.target\n", 1))
+with patch.object(a, "systemctl") as reloaded:
+  first = a.repair_unit_hooks()
+  second = a.repair_unit_hooks()
+check("an older unit's After=graphical-session.target ordering is stripped once",
+      first == ["paired"] and second == [] and a._read(a.quadlet_path("paired")) == pair_text.strip() and reloaded.call_count == 1, repr((first, second)))
 # Under the lock: refresh leaves the units alone while another command holds it, as an update may be
 # replacing one, and repairs them once it's free.
 a.write_atomic(a.quadlet_path("paired"), pair_text.replace(f"{engine} ", "/usr/bin/env omarchy-models "))
