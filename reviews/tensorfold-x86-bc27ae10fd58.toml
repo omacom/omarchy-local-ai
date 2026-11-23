@@ -1,0 +1,15 @@
+image = "ghcr.io/bmaltais/tensorfold-x86@sha256:bc27ae10fd58e139dc1529eddc8c0af8961cdbd6e664f86485e5f5ccdc9aaf96"
+publisher = "bmaltais (built from images/tensorfold-x86/Containerfile in this repo, TensorFold's signed upstream release with no patches)"
+reviewer = "Claude Code for Bernard Maltais"
+date = "2026-11-13"
+version = "TensorFold 1.2.7, linux-x86_64 release archive"
+source = "open"
+license_url = "https://raw.githubusercontent.com/ashhart/TensorFold/v1.2.7/LICENSE"
+license_sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+checked = [
+  "license: TensorFold is Apache-2.0 (the archive's LICENSE equals the repository's at v1.2.7); its archive ships xgrammar and dlpack (Apache-2.0), picojson (BSD-2-Clause) and the notices of the kernels it adapts in /opt/tensorfold/LICENSES; the base is debian:trixie-slim with curl and ca-certificates, under their Debian licenses in /usr/share/doc",
+  "build: the Containerfile checks the release archive against the SHA-256 the release publishes, the ed25519 signature over that checksum against the release key kept beside it as release.pem, and every unpacked file against the archive's own SHA256SUMS; nothing is compiled or patched",
+  "build: the image carries no CUDA toolkit, no Python and no cuBLASLt; the kernels are embedded in tensorfold-native and libcuda comes from the CDI spec",
+  "acceptance: with an RTX 3090 through CDI, `tensorfold-native capabilities --json` reports chip nvidia-sm86 and the cuda backend",
+  "behavior: --no-update-check is fixed in the runtime command and TENSORFOLD_NO_UPDATE_CHECK=1 in the image, so it does not check for updates; learning, recall, recording, the dashboard and open metrics are reserved and stay off",
+]
