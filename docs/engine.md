@@ -86,7 +86,7 @@ class's recipes of that kind (`recipes` for text, else `images`, `videos` or `mu
 in order; `use best` alone lists each kind's pick for this machine and sets nothing up. It checks that the runtime runs on the GPU and that the recipe fits, and
 chooses the largest fitting context, and at the same context the variant with the larger memory peak that fits.
 A GPU class is its family, except that the N1x (`nvidia-n1x`) shares the GB10's (`nvidia-gb10`): the same
-chip, so what either can run depends only on memory. Measurements keep the family they ran on. `use <recipe>` supports `--ctx`, `--gpu`,
+chip, so what either can run depends only on memory. Unified AMD iGPUs with fewer than 8 Compute Units (such as 2-CU display iGPUs like the Radeon 610M) are excluded. When a machine has multiple GPUs, pairs outrank single nodes and discrete GPUs outrank integrated ones regardless of GTT size. Measurements keep the family they ran on. `use <recipe>` supports `--ctx`, `--gpu`,
 `--seed`. Two questions decide which recipes a machine is offered (`list`'s `available`): whether
 the runtime's image works on the GPU (its `gpus`) and whether a variant fits the GPU's memory and
 RAM. A measurement on the machine's class is not needed; it gives the panel speeds to show, and
