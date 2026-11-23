@@ -367,9 +367,12 @@ class Engine:
           + b"\r\n--" + BOUNDARY + b"--\r\n"
         )
         with self.cond:
-          job.result = body
-          job.content_type = f"multipart/mixed; boundary={BOUNDARY.decode()}"
-          job.status = "done"
+          if job.cancel_event.is_set():
+            job.status = "cancelled"
+          else:
+            job.result = body
+            job.content_type = f"multipart/mixed; boundary={BOUNDARY.decode()}"
+            job.status = "done"
           job.finished_at = time.monotonic()
           self._prune_locked()
       except CancelledError:
