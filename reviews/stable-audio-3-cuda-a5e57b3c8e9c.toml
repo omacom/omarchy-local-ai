@@ -1,0 +1,16 @@
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:a5e57b3c8e9c41848043de21347293a552c578c17988c9ef328b1c6ed54ad066"
+publisher = "Omacom (built from images/stable-audio-3-cuda by this repository's workflow: betweentwomidnights/sa3.cpp 2af7f674 + sa3-server)"
+reviewer = "Antigravity for David Heinemeier Hansson"
+date = "2026-11-23"
+version = "sa3.cpp 2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d + sa3-server (libsa3 ABI v1 + libmp3lame), built with CUDA 13.4.3 for compute capability 12.1 (ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda:2af7f674-29)"
+source = "open (MIT), https://github.com/betweentwomidnights/sa3.cpp; image recipe images/stable-audio-3-cuda in https://github.com/omacom/omarchy-local-ai"
+license_url = "https://raw.githubusercontent.com/betweentwomidnights/sa3.cpp/2af7f6749bb5b3dc17b43a3cb0d5e89c2f83d80d/LICENSE"
+license_sha256 = "522b5a432d43a08a760e8da70e9c3759ee9c09aceb504881b2a79e0c74570498"
+checked = [
+  "license: sa3.cpp is MIT (the LICENSE at 2af7f674 hashes as above); its ggml submodule is MIT; its vendored cpp-httplib and yyjson are MIT; libmp3lame0 is LGPL (Ubuntu package); the license texts ship in /usr/share/licenses/sa3.cpp",
+  "license: libcudart.so.13, libcublas.so.13 and libcublasLt.so.13 (CUDA 13.4.3) are redistributables under NVIDIA's CUDA EULA, Attachment A, shipped inside this value-added runtime with the EULA text from their packages in /usr/share/licenses/sa3.cpp/nvidia",
+  "build: published to GHCR by images.yml run 45206386408 (stable-audio-3-cuda:2af7f674-29) on ubuntu-24.04-arm from images/stable-audio-3-cuda's Containerfile on docker.io/nvidia/cuda@sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9 (13.4.3-devel-ubuntu24.04), with SA3_CUDA for compute capability 12.1, no NCCL and a generic ARMv8 CPU side; the runtime layer is docker.io/library/ubuntu@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 with libgomp1, libmp3lame0, curl and ca-certificates, and carries no CUDA toolkit: libcuda comes from the CDI spec",
+  "behavior: discovers DiT, SAME decoder, T5Gemma text encoder, tokenizer and conditioner GGUFs under --models, loads them only during synthesis with frugal stage-by-stage GPU offloading and releases the backend right after every song; carries no model weights",
+  "acceptance (2026-11-23): pulled anonymously from GHCR and served under the engine's read-only root, tmpfs at /tmp, all capabilities dropped (CapEff 0), no-new-privileges, internal network, and GPU through CDI on an N1x (128 GB, driver 615.78.08)",
+  "acceptance (2026-11-23): rejects requests without or with a wrong key (401) and serves them with the right key (200) on /health and /props; renders 60 s and 180 s 192 kbit/s MP3 tracks on GPU; cancels cleanly mid-generation; stops cleanly on SIGTERM",
+]

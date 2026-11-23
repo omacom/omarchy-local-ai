@@ -5,9 +5,9 @@
 # libmp3lame). The driver's libcuda arrives through CDI; the image carries only cudart and cuBLAS.
 # Weights load on demand with frugal stage-by-stage offloading and unload immediately after every
 # song, so it holds no GPU memory between songs and is checked by the models it found (api = "sa3").
-image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:8d6feea59f8e5a62d227760b4d0bf68f13ae04707693e93da766aef78db68bd5"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3-cuda@sha256:a5e57b3c8e9c41848043de21347293a552c578c17988c9ef328b1c6ed54ad066"
 tier = "third-party"
-review = "reviews/stable-audio-3-cuda-8d6feea59f8e.toml"
+review = "reviews/stable-audio-3-cuda-a5e57b3c8e9c.toml"
 api = "sa3"
 port = 8085
 command = ["sa3-server", "--host", "0.0.0.0", "--port", "8085"]
