@@ -1747,28 +1747,66 @@ for name, answers, message in (("that answers without the key", [(200, found)], 
 
 # Stable Audio 3 music runtime: api = "sa3" checks /props for dit, decoder, text_encoder, tokenizer,
 # and vocals = false marks an instrumental-only music recipe.
-sa3_rt = {"image": "registry.example/test/sa3-cuda@sha256:" + "d" * 64, "tier": "omarchy", "api": "sa3", "port": 8085,
-          "health": {"probe": ["curl", "http://127.0.0.1:8085/health"]}, "command": ["sa3-server"],
-          "reserved": ["--port", "SA3_API_KEY"], "run": {"devices": ["cdi-nvidia"], "tmpfs": "/tmp"}, "gpus": ["nvidia-gb10"],
-          "inputs": {"model": {"arg": "--models"}, "key": {"env": "SA3_API_KEY"}}}
-sa3_song = {"name": "Stable Audio 3 Medium", "vendor": "stability", "kind": "music", "vocals": False, "runtime": "sa3-cuda",
-            "hardware": [{"gpu": "nvidia-n1x", "ram_class": 128, "measured": "measurements/model.toml"}],
-            "artifacts": [{"repo": "test/sa3", "revision": "a" * 40, "license": "other", "files": ["dit.gguf"], "dest": "sa3", "model": "."}],
-            "variant": [picture_variant]}
+sa3_cuda_rt = {"image": "registry.example/test/sa3-cuda@sha256:" + "d" * 64, "tier": "omarchy", "api": "sa3", "port": 8085,
+               "health": {"probe": ["curl", "http://127.0.0.1:8085/health"]}, "command": ["sa3-server"],
+               "reserved": ["--port", "SA3_API_KEY"], "run": {"devices": ["cdi-nvidia"], "tmpfs": "/tmp"}, "gpus": ["nvidia-gb10"],
+               "inputs": {"model": {"arg": "--models"}, "key": {"env": "SA3_API_KEY"}}}
+sa3_cuda_song = {"name": "Stable Audio 3 Medium", "vendor": "stability", "kind": "music", "vocals": False, "runtime": "sa3-cuda",
+                 "hardware": [{"gpu": "nvidia-n1x", "ram_class": 128, "measured": "measurements/model.toml"}],
+                 "artifacts": [{"repo": "test/sa3", "revision": "a" * 40, "license": "other", "files": ["dit.gguf"], "dest": "sa3", "model": "."}],
+                 "variant": [picture_variant]}
 check("an sa3 music runtime and instrumental recipe validate",
-      not a.validate_runtime("sa3-cuda", sa3_rt) and not a.validate_recipe("sa3-song", sa3_song, {"sa3-cuda": sa3_rt}),
-      "\n".join(a.validate_runtime("sa3-cuda", sa3_rt) + a.validate_recipe("sa3-song", sa3_song, {"sa3-cuda": sa3_rt})))
+      not a.validate_runtime("sa3-cuda", sa3_cuda_rt) and not a.validate_recipe("sa3-song-cuda", sa3_cuda_song, {"sa3-cuda": sa3_cuda_rt}),
+      "\n".join(a.validate_runtime("sa3-cuda", sa3_cuda_rt) + a.validate_recipe("sa3-song-cuda", sa3_cuda_song, {"sa3-cuda": sa3_cuda_rt})))
 check("vocals is only for music recipes", any(".vocals" in e for e in a.validate_recipe("model", dict(recipe, vocals=False), {"server": runtime})))
 sa3_found = b'{"models": {"dit": ["dit.gguf"], "decoder": ["same.gguf"], "text_encoder": ["t5.gguf"], "tokenizer": ["vocab.gguf"]}}'
 with patch.object(a, "http_status", side_effect=[(401, b""), (200, sa3_found)]):
-  a.post_start_checks("sa3-song", "test-key", sa3_rt)
+  a.post_start_checks("sa3-song-cuda", "test-key", sa3_cuda_rt)
 with patch.object(a, "http_status", side_effect=[(401, b""), (200, b'{"models": {"dit": ["dit.gguf"]}}')]):
-  raises("an sa3-server missing parts is refused", lambda: a.post_start_checks("sa3-song", "test-key", sa3_rt), "found no decoder, text_encoder, tokenizer model")
-sa3_inst_rec = a.begin_installing("sa3-song", sa3_song)
-sa3_inst_row = a.install_row("sa3-song", sa3_inst_rec)
+  raises("an sa3-server missing parts is refused", lambda: a.post_start_checks("sa3-song-cuda", "test-key", sa3_cuda_rt), "found no decoder, text_encoder, tokenizer model")
+sa3_inst_rec = a.begin_installing("sa3-song-cuda", sa3_cuda_song)
+sa3_inst_row = a.install_row("sa3-song-cuda", sa3_inst_rec)
 check("an installing instrumental music recipe keeps vocals = False",
       sa3_inst_rec.get("vocals") is False and sa3_inst_row.get("vocals") is False, repr((sa3_inst_rec, sa3_inst_row)))
-a.clear_installing("sa3-song")
+a.clear_installing("sa3-song-cuda")
+
+# A CPU-only music model (Stable Audio 3): runs with gpus = ["cpu"], no GPU devices, peak_gpu_gib = 0,
+# vocals = false, stays available on machines with no supported GPU, and yields to a GPU build of
+# the same model when one runs on the machine.
+sa3_rt = {"image": "registry.example/test/sa3@sha256:" + "d" * 64, "tier": "omarchy", "api": "sa3", "port": 8085,
+          "health": {"probe": ["curl", "http://127.0.0.1:8085/health"]}, "command": ["sa3-server"],
+          "reserved": ["--port", "SA3_API_KEY"], "run": {"tmpfs": "/tmp"}, "gpus": ["cpu"],
+          "inputs": {"model": {"arg": "--models"}, "key": {"env": "SA3_API_KEY"}}}
+sa3_variant = {"peak_ram_gib": 4, "peak_gpu_gib": 0}
+sa3_song = {"name": "Stable Audio 3 Medium", "vendor": "stability", "kind": "music", "vocals": False, "runtime": "sa3",
+            "hardware": [{"gpu": "cpu", "ram_class": 64, "measured": "measurements/model.toml"}],
+            "artifacts": [{"repo": "test/sa3", "revision": "a" * 40, "license": "other", "files": ["dit.tflite"], "dest": "sa3", "model": "."}],
+            "variant": [sa3_variant]}
+check("a CPU music runtime and instrumental recipe validate",
+      not a.validate_runtime("sa3", sa3_rt) and not a.validate_recipe("sa3-song", sa3_song, {"sa3": sa3_rt}),
+      "\n".join(a.validate_runtime("sa3", sa3_rt) + a.validate_recipe("sa3-song", sa3_song, {"sa3": sa3_rt})))
+check("a CPU runtime rejects GPU devices", any("can't use GPU devices" in e for e in a.validate_runtime("sa3", dict(sa3_rt, run={"devices": ["render"]}))))
+cpu_only_profile = {"platform": "x86", "ram_class": 32, "ram_gib": 16, "gpus": []}
+cpu_catalog = SimpleNamespace(root=str(repo), recipes={"model": recipe, "sa3-song": sa3_song, "sa3-song-cuda": sa3_cuda_song},
+                              runtimes={"server": runtime, "sa3": sa3_rt, "sa3-cuda": sa3_cuda_rt}, best={"class": []})
+cpu_rows = {row["id"]: row for row in a.recipe_listing(cpu_catalog, cpu_only_profile)}
+check("a CPU recipe is available on a machine with no supported GPU, while GPU recipes stay unavailable",
+      cpu_rows["sa3-song"]["available"] and cpu_rows["sa3-song"]["vocals"] is False and not cpu_rows["model"]["available"] and not cpu_rows["sa3-song-cuda"]["available"], repr(cpu_rows))
+check("a CPU recipe doesn't fit when RAM is below peak plus desktop reserve",
+      not {row["id"]: row for row in a.recipe_listing(cpu_catalog, dict(cpu_only_profile, ram_gib=8))}["sa3-song"]["available"])
+gb10_profile = {"platform": "aarch64-gb10", "ram_class": 128, "ram_gib": 128,
+                "gpus": [{"vendor": "nvidia", "family": "nvidia-gb10", "render_node": "/dev/dri/renderD128", "memory_gib": 110, "max_memory_gib": 110, "unified": True}]}
+gb10_rows = {row["id"]: row for row in a.recipe_listing(cpu_catalog, gb10_profile)}
+check("when a GPU build of the same model fits, the CPU fallback yields to it in listings",
+      gb10_rows["sa3-song-cuda"]["available"] and not gb10_rows["sa3-song"]["available"], repr(gb10_rows))
+sa3_manifest = {"schema": 1, "recipe_id": "sa3-song", "recipe": sa3_song, "runtime": sa3_rt, "runtime_id": "sa3", "image": sa3_rt["image"],
+                "variant": sa3_variant, "files": [], "roles": {"model": "sa3"}, "fileset": "d" * 16, "gpu": "cpu", "profile": cpu_only_profile}
+with patch.object(a, "unit_props", return_value={}), patch.object(a, "free_memory", return_value=(10, 16)):
+  sa3_row = a.model_record("sa3-song", sa3_manifest, cpu_only_profile)
+check("a CPU music model's status row carries vocals = False and fits by RAM",
+      sa3_row["kind"] == "music" and sa3_row["vocals"] is False and sa3_row["fits"] is True, repr(sa3_row))
+sa3_unit = a.render_container("sa3-song", sa3_song, sa3_rt, sa3_variant, {"model": "sa3"}, a.cpu_device(cpu_only_profile), "d" * 16)
+check("a CPU container unit adds no GPU devices", "AddDevice=" not in sa3_unit and "Tmpfs=/tmp" in sa3_unit)
 
 # Vulkan Stable Audio 3 runtime for AMD GPUs: render node, tmpfs, api = "sa3", multi-artifact dir.
 sa3_vk_rt = {"image": "registry.example/test/sa3-vulkan@sha256:" + "e" * 64, "tier": "omarchy", "api": "sa3", "port": 8085,

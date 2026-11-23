@@ -1,0 +1,28 @@
+recipe = "stable-audio-3-medium"
+measured_at = "2026-11-23"
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3@sha256:695cc40707888292401c7f1ba55388414f45603e482af9aa07a0544a06c13273"
+load_seconds = 0.4
+method = "a 60 s and a 180 s instrumental track through /synth on the containerised sa3-server (16 auto-tuned XNNPACK CPU threads, 8 pingpong steps, medium w8a8 DiT + SAME-L w8a8 decoder) to 192 kbit/s MP3; peak memory from podman stats every 0.5 s"
+
+[machine]
+platform = "x86"
+gpu = "intel-arc-b390"
+ram_class = 64
+system = "XPS 14 DA14260"
+kernel = "7.2.15-4-omarchy"
+cpu = "Intel(R) Core(TM) Ultra X7 358H"
+
+[memory]
+observed_at_load_gib = 0.1
+peak_ram_gib = 2.32
+idle_after_render_gib = 0.41
+total_gib = 62.3
+peak_gpu_gib = 0.0
+
+[music]
+song_60s_rendered_s = 19.6
+song_180s_rendered_s = 79.7
+
+[[artifacts]]
+repo = "stabilityai/stable-audio-3-optimized"
+revision = "30cb2644da54bfa63275d1bc7f1fa67fc718680f"

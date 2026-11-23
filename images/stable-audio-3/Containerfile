@@ -1,0 +1,50 @@
+# Stable Audio 3 LiteRT/XNNPACK server for omarchy-local-ai.
+# Runs Stability AI's quantized TFLite/LiteRT pipeline on CPU across both x86_64 and aarch64,
+# with XNNPACK runtime SIMD dispatch (AVX2/VNNI/AVX-512 on x86_64, NEON/DotProd/I8MM on aarch64).
+# Built from Stability-AI/stable-audio-3 at a pinned commit plus sa3-server (HTTP API matching
+# ace-server's async job protocol with Bearer key auth from SA3_API_KEY / --api-key-file).
+
+ARG BASE=docker.io/library/python@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
+ARG COMMIT=790793b89ddceea612be9ce42ff6830d18f6fa57
+
+FROM ${BASE} AS build
+ARG COMMIT
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone --filter=blob:none --no-checkout https://github.com/Stability-AI/stable-audio-3 /src \
+ && git -C /src sparse-checkout init --cone \
+ && git -C /src sparse-checkout set optimized/tflite \
+ && git -C /src checkout --quiet "$COMMIT"
+RUN python3 -m venv /opt/venv \
+ && /opt/venv/bin/pip install --no-cache-dir \
+      ai-edge-litert==2.4.0 \
+      numpy==2.4.6 \
+      sentencepiece==0.2.3
+RUN mkdir -p /opt/sa3/models/defs /opt/sa3/scripts /licenses \
+ && install -Dm644 /src/optimized/tflite/models/defs/tflite_pipeline.py /opt/sa3/models/defs/tflite_pipeline.py \
+ && install -Dm644 /src/optimized/tflite/scripts/rung_dit.py /opt/sa3/scripts/rung_dit.py \
+ && install -Dm644 /src/optimized/tflite/scripts/rung_decoder.py /opt/sa3/scripts/rung_decoder.py \
+ && install -Dm644 /src/LICENSE /licenses/LICENSE
+
+FROM ${BASE}
+# ffmpeg encodes rendered stereo PCM to MP3; curl runs the engine's health probe.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg curl \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/venv /opt/venv
+COPY --from=build /opt/sa3 /opt/sa3
+COPY --from=build /licenses /usr/share/licenses/stable-audio-3
+COPY sa3-server /usr/bin/sa3-server
+RUN chmod 0755 /usr/bin/sa3-server
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+LABEL org.opencontainers.image.source="https://github.com/omacom/omarchy-local-ai"
+LABEL org.opencontainers.image.description="Stable Audio 3 LiteRT CPU server for omarchy-local-ai (x86_64 and aarch64)"
+LABEL org.opencontainers.image.licenses="MIT"
+
+EXPOSE 8085
+CMD ["sa3-server", "--host", "0.0.0.0", "--port", "8085", "--models", "/models"]

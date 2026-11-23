@@ -1,0 +1,22 @@
+# Stable Audio 3 LiteRT/XNNPACK server, built by Omacom from images/stable-audio-3 from
+# Stability-AI/stable-audio-3 (MIT) plus sa3-server (async job API matching ace-server, with
+# Bearer auth from SA3_API_KEY / --api-key-file). Runs on CPU across x86_64 and aarch64 with
+# XNNPACK runtime SIMD dispatch and auto-tuned threads, requiring no GPU devices. Each stage
+# (T5Gemma, DiT, SAME-L decoder) loads only while a song needs it and frees weights + tmpfs
+# cache immediately after, keeping idle memory low.
+image = "ghcr.io/omacom/omarchy-local-ai/stable-audio-3@sha256:695cc40707888292401c7f1ba55388414f45603e482af9aa07a0544a06c13273"
+tier = "third-party"
+review = "reviews/stable-audio-3-695cc4070788.toml"
+api = "sa3"
+port = 8085
+command = ["sa3-server", "--host", "0.0.0.0", "--port", "8085"]
+health = { probe = ["/bin/sh", "-c", "curl -fsS -H \"Authorization: Bearer $OMARCHY_LOCAL_KEY\" http://127.0.0.1:8085/health"] }
+# It writes nothing outside /tmp, where XNNPACK caches packed rung weights during a render.
+run = { tmpfs = "/tmp" }
+# Runs on CPU across x86_64 and aarch64 with no GPU devices required.
+gpus = ["cpu"]
+reserved = ["--host", "--port", "--api-key", "--api-key-file", "SA3_API_KEY"]
+
+[inputs]
+model = { arg = "--models" }
+key = { env = "SA3_API_KEY" }

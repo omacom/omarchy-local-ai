@@ -56,3 +56,4 @@ recipes = ["deepseek-v4.1-flash-tensorfold-pair", "glm-5.3-flash-tensorfold-pair
 gpu = "intel-arc-b390"
 ram_class = 64
 recipes = ["qwen3.6-35b-a3b-llamacpp"]
+music = ["stable-audio-3-medium"]

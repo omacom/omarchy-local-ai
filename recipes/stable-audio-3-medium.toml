@@ -1,0 +1,38 @@
+# Stability AI's Stable Audio 3 Medium with the SAME-L audio decoder (both int8 w8a8) and T5Gemma
+# text encoder, running on LiteRT/XNNPACK CPU across x86_64 and aarch64. Makes instrumental music
+# up to three minutes long with no GPU required and a ~2.3 GiB peak footprint.
+name = "Stable Audio 3 Medium"
+vendor = "stability"
+kind = "music"
+vocals = false
+runtime = "stable-audio-3"
+# What a setup downloads: the four files pinned below, not the runtime image.
+download_gib = 2.56
+
+[[hardware]]
+gpu = "cpu"
+ram_class = 64
+measured = "measurements/stable-audio-3-medium-xps14-64.toml"
+
+[[hardware]]
+gpu = "intel-arc-b390"
+ram_class = 64
+measured = "measurements/stable-audio-3-medium-xps14-64.toml"
+
+[[artifacts]]
+repo = "stabilityai/stable-audio-3-optimized"
+revision = "30cb2644da54bfa63275d1bc7f1fa67fc718680f"
+license = "other (Stability AI Community License)"
+files = [
+  "tflite/sa3-m/dit_w8a8.tflite",
+  "tflite/same-l/dec_w8a8.tflite",
+  "tflite/t5gemma/encoder_fp16.tflite",
+  "tokenizer.model",
+]
+dest = "sa3"
+model = "."
+
+# Measured: 2.32 GiB peak RAM rendering a 180 s song in 79.7 s (60 s in 19.6 s); 0 GiB GPU memory.
+[[variant]]
+peak_ram_gib = 4
+peak_gpu_gib = 0

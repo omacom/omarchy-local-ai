@@ -121,6 +121,16 @@ def gpu_class(family):
   return GPU_CLASSES.get(family, family)
 
 
+def runtime_is_cpu(runtime):
+  return "cpu" in (runtime or {}).get("gpus", [])
+
+
+def cpu_device(profile):
+  ram = profile["ram_gib"]
+  return {"vendor": "cpu", "family": "cpu", "render_node": "", "vram_gib": 0, "gtt_gib": 0,
+          "unified": True, "memory_gib": ram, "max_memory_gib": ram, "sysfs": ""}
+
+
 def recipe_kind(recipe):
   return (recipe or {}).get("kind", "text")
 
@@ -366,6 +376,8 @@ def raise_gpu_memory(variant, gpu, detach=False):
   """Raises a unified GPU's memory cap when the variant needs more than the GPU addresses now.
   It applies at the next boot, so the model starts once the machine has rebooted. The panel's
   setup has no terminal for sudo, so polkit asks for the password instead."""
+  if variant["peak_gpu_gib"] <= 0 or gpu["vendor"] == "cpu":
+    return
   if variant["peak_gpu_gib"] <= gpu["memory_gib"] or variant["peak_gpu_gib"] > gpu.get("max_memory_gib", gpu["memory_gib"]):
     return
   pages = gpu_pages_limit(meminfo().get("MemTotal", 0))
@@ -418,6 +430,8 @@ def machine_profile():
 
 
 def choose_gpu(profile, family=None):
+  if family == "cpu":
+    return cpu_device(profile)
   gpus = profile["gpus"]
   if family:
     matches = [gpu for gpu in gpus if gpu["family"] == family]
@@ -437,14 +451,19 @@ def choose_gpu(profile, family=None):
 
 def recipe_gpu(profile, recipe, family=None, runtime=None):
   """The GPU a recipe runs on here: the one named, else the best of this machine's GPUs its
-  runtime runs on (a pair machine still runs single-node recipes on its own GPU)."""
+  runtime runs on (a pair machine still runs single-node recipes on its own GPU, and a CPU
+  runtime runs on CPU even without a supported GPU)."""
   if family:
     return choose_gpu(profile, family)
   if runtime is not None:
+    if runtime_is_cpu(runtime):
+      return cpu_device(profile)
     matches = [gpu for gpu in profile["gpus"] if runtime_supports(runtime, gpu)]
   else:
     measured = {hw.get("gpu") for hw in recipe.get("hardware", [])}
     matches = [gpu for gpu in profile["gpus"] if gpu["family"] in measured]
+    if not matches and "cpu" in measured:
+      return cpu_device(profile)
   if matches:
     return max(matches, key=lambda gpu: (gpu.get("nodes", 1), gpu["memory_gib"]))
   return choose_gpu(profile)
@@ -699,12 +718,16 @@ def validate_runtime(rid, runtime, root=None):
               errors.append(f"{where}.review: missing {field}")
         except tomllib.TOMLDecodeError as error:
           errors.append(f"{where}.review: {error}")
-  # The GPUs its image works on, each a vendor or a GPU class, and only what its devices reach:
-  # an NVIDIA GPU through CDI, an AMD or Intel one through the render node.
+  # The GPUs its image works on, each a vendor or a GPU class (or ["cpu"] for CPU-only runtimes),
+  # and only what its devices reach: an NVIDIA GPU through CDI, an AMD or Intel one through the
+  # render node, CPU with no GPU devices.
   gpus = runtime.get("gpus")
   devices = runtime.get("run", {}).get("devices", []) if isinstance(runtime.get("run"), dict) else []
-  if not isinstance(gpus, list) or not gpus or not all(isinstance(g, str) and (g in VENDORS or any(g.startswith(f"{v}-") for v in VENDORS)) for g in gpus):
-    errors.append(f"{where}.gpus: must list the vendors ({', '.join(VENDORS)}) or GPU classes (such as amd-strix-halo) its image works on")
+  if gpus == ["cpu"]:
+    if devices:
+      errors.append(f"{where}.gpus: cpu can't use GPU devices {devices}")
+  elif not isinstance(gpus, list) or not gpus or not all(isinstance(g, str) and (g in VENDORS or any(g.startswith(f"{v}-") for v in VENDORS)) for g in gpus):
+    errors.append(f"{where}.gpus: must list the vendors ({', '.join(VENDORS)}), GPU classes (such as amd-strix-halo), or ['cpu']")
   else:
     for entry in gpus:
       vendor = entry.split("-")[0]
@@ -983,9 +1006,12 @@ def validate_recipe(rid, recipe, runtimes, root=None):
     if ("ctx" in variant or kind == "text") and (not isinstance(variant.get("ctx"), int) or variant["ctx"] <= 0):
       errors.append(f"{at}.ctx: must be a positive integer")
       continue
-    for field in ("peak_ram_gib", "peak_gpu_gib"):
-      if not isinstance(variant.get(field), (int, float)) or variant[field] <= 0:
-        errors.append(f"{at}.{field}: must be a positive number")
+    if not isinstance(variant.get("peak_ram_gib"), (int, float)) or isinstance(variant.get("peak_ram_gib"), bool) or variant["peak_ram_gib"] <= 0:
+      errors.append(f"{at}.peak_ram_gib: must be a positive number")
+    cpu_rt = runtime_is_cpu(runtime)
+    if (not isinstance(variant.get("peak_gpu_gib"), (int, float)) or isinstance(variant.get("peak_gpu_gib"), bool)
+        or (variant["peak_gpu_gib"] < 0 if cpu_rt else variant["peak_gpu_gib"] <= 0)):
+      errors.append(f"{at}.peak_gpu_gib: must be a {'non-negative' if cpu_rt else 'positive'} number")
     if variant.get("ctx") and runtime and "ctx" not in inputs:
       errors.append(f"{at}: runtime '{runtime_id}' has no ctx input")
   # A video model's clip lengths: the longest it makes, and how its GPU peak grows with the clip,
@@ -1159,6 +1185,10 @@ def runtime_supports(runtime, gpu):
   """Whether the runtime's image works on this GPU: its vendor, or its class, is in `gpus`."""
   if bool(runtime.get("pair")) != (gpu.get("nodes", 1) == 2):
     return False
+  if runtime_is_cpu(runtime):
+    return True
+  if gpu["vendor"] == "cpu":
+    return False
   gpus = runtime.get("gpus", [])
   return gpu["vendor"] in gpus or gpu_class(gpu["family"]) in gpus
 
@@ -1167,7 +1197,7 @@ def fits(variant, profile, gpu):
   """Static fit of a variant on this machine: (ok, reason)."""
   # Judged by the most the GPU can be given: use raises a cap that's lower.
   ceiling = gpu.get("max_memory_gib", gpu["memory_gib"])
-  if variant["peak_gpu_gib"] > ceiling:
+  if variant["peak_gpu_gib"] > 0 and variant["peak_gpu_gib"] > ceiling:
     return False, f"needs {variant['peak_gpu_gib']:g} GiB GPU-addressable memory, this GPU has {ceiling:.1f}"
   if variant["peak_ram_gib"] + RESERVE_GIB > profile["ram_gib"]:
     return False, f"needs {variant['peak_ram_gib']:g} GiB RAM plus {RESERVE_GIB} GiB for the desktop, this machine has {profile['ram_gib']:.1f}"
@@ -1273,7 +1303,7 @@ def recipe_listing(catalog, profile, running=(), experimental=False):
     if recipe.get("experimental") and not experimental and not recipe_installed(rid):
       continue
     runtime = catalog.runtimes.get(recipe.get("runtime"), {})
-    if gpu:
+    if gpu or runtime_is_cpu(runtime):
       own = recipe_gpu(profile, recipe, runtime=runtime)
       variant, reason = compatibility(catalog, rid, profile, own)
     else:
@@ -1307,6 +1337,17 @@ def recipe_listing(catalog, profile, running=(), experimental=False):
       "decode_tok_s": measured.get("long", {}).get("decode_tok_s"),
       "prefill_tok_s": measured.get("long", {}).get("prefill_tok_s"),
     })
+  # When a GPU-accelerated recipe with the same (kind, name) already runs on this machine,
+  # keep the CPU fallback out of available listings so apps and `list` pick the faster GPU build.
+  gpu_available = {
+    (row["kind"], row["name"])
+    for row in rows
+    if row["available"] and not runtime_is_cpu(catalog.runtimes.get(row["runtime"], {}))
+  }
+  for row in rows:
+    if row["available"] and not row["installed"] and runtime_is_cpu(catalog.runtimes.get(row["runtime"], {})) and (row["kind"], row["name"]) in gpu_available:
+      row["available"] = False
+      row["reason"] = "A GPU build runs on this machine"
   return rows
 
 
@@ -2366,14 +2407,14 @@ def reclaim_page_cache(need_gib):
 
 
 def check_headroom(variant, gpu):
-  if variant["peak_gpu_gib"] > gpu["memory_gib"]:
+  if variant["peak_gpu_gib"] > 0 and variant["peak_gpu_gib"] > gpu["memory_gib"]:
     raise gpu_short_error(variant, gpu)
   if gpu.get("nodes") == 2:
     pair_limits(gpu["peer"])
     peer_headroom(gpu["peer"], variant)
   for _ in range(15):
     available, gpu_free = free_memory(gpu)
-    if available >= start_needs_gib(variant) and gpu_free >= variant["peak_gpu_gib"]:
+    if available >= start_needs_gib(variant) and (variant["peak_gpu_gib"] <= 0 or gpu_free >= variant["peak_gpu_gib"]):
       reclaim_page_cache(start_needs_gib(variant))
       return free_memory(gpu)
     time.sleep(1)
@@ -2381,9 +2422,10 @@ def check_headroom(variant, gpu):
   names = [(load_model(rid) or {}).get("recipe", {}).get("name", rid) for rid in running]
   need = start_needs_gib(variant)
   short = f"{NOT_ENOUGH_MEMORY} (needs {need:g} GiB)"
+  gpu_detail = (f" and {variant['peak_gpu_gib']:g} GiB GPU-addressable; {available:.1f} GiB RAM and {gpu_free:.1f} GiB GPU are free.\n"
+                if variant["peak_gpu_gib"] > 0 else f"; {available:.1f} GiB RAM is free.\n")
   raise LocalError(
-    f"Not enough free memory right now: the model needs {need:g} GiB RAM "
-    f"and {variant['peak_gpu_gib']:g} GiB GPU-addressable; {available:.1f} GiB RAM and {gpu_free:.1f} GiB GPU are free.\n"
+    f"Not enough free memory right now: the model needs {need:g} GiB RAM{gpu_detail}"
     + (f"Local models running: {', '.join(running)} (stop one with: omarchy models stop <recipe>)\n" if running else "")
     + f"Largest memory users: {top_memory_users()}",
     short=short,
@@ -3608,10 +3650,10 @@ def start_fit(manifest, profile):
     gpu = choose_gpu(profile, manifest.get("gpu"))
   except LocalError as error:
     return False, error.short
-  if variant["peak_gpu_gib"] > gpu["memory_gib"]:
+  if variant["peak_gpu_gib"] > 0 and variant["peak_gpu_gib"] > gpu["memory_gib"]:
     return False, gpu_short_error(variant, gpu).short
   available, gpu_free = free_memory(gpu)
-  if available >= start_needs_gib(variant) and gpu_free >= variant["peak_gpu_gib"]:
+  if available >= start_needs_gib(variant) and (variant["peak_gpu_gib"] <= 0 or gpu_free >= variant["peak_gpu_gib"]):
     return True, ""
   return False, "Not enough memory"
 

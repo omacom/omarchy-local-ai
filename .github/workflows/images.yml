@@ -32,6 +32,8 @@ jobs:
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
       any: ${{ steps.pick.outputs.any }}
+      multiarch: ${{ steps.pick.outputs.multiarch }}
+      any_multiarch: ${{ steps.pick.outputs.any_multiarch }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,14 +47,17 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           BEFORE: ${{ github.event.before }}
         run: |
-          # Where each image runs decides the runner it's built on; the check runs in the built image.
+          # Where each image runs decides the runner(s) it's built on; the check runs in the built image.
+          # Multi-arch images list two runners (amd64 arm64) and are merged into one manifest list on publish.
           declare -A runner=(
             [llamacpp]=ubuntu-latest [sdcpp]=ubuntu-latest [acestep]=ubuntu-latest [stable-audio-3-vulkan]=ubuntu-latest
+            [stable-audio-3]="ubuntu-latest ubuntu-24.04-arm"
             [sdcpp-cuda]=ubuntu-24.04-arm [acestep-cuda]=ubuntu-24.04-arm [stable-audio-3-cuda]=ubuntu-24.04-arm [tensorfold]=ubuntu-24.04-arm
             [tensorfold-dsv41]=ubuntu-24.04-arm [tensorfold-glm53]=ubuntu-24.04-arm [tensorfold-nemotron-bolt]=ubuntu-24.04-arm [llamacpp-hy4]=ubuntu-24.04-arm [inkling2-exl3]=ubuntu-24.04-arm
           )
           declare -A check=(
             [llamacpp]="llama-server --version" [sdcpp]="command -v sd-server" [acestep]="command -v ace-server" [stable-audio-3-vulkan]="command -v sa3-server && sa3-server --help >/dev/null 2>&1"
+            [stable-audio-3]="command -v sa3-server && sa3-server --help >/dev/null && python3 -c 'import ai_edge_litert, numpy, sentencepiece' && command -v ffmpeg"
             [sdcpp-cuda]="command -v sd-server" [acestep-cuda]="command -v ace-server" [stable-audio-3-cuda]="command -v sa3-server" [tensorfold]="command -v tensorfold-native"
             [tensorfold-dsv41]="command -v tensorfold-native" [tensorfold-glm53]="command -v tensorfold-native"
             [tensorfold-nemotron-bolt]="command -v tensorfold-native" [llamacpp-hy4]="command -v llama-server" [inkling2-exl3]="command -v serve && python3 -c 'import exllamav3, fastapi, transformers'"
@@ -83,11 +88,29 @@ jobs:
             fi
             picked+=("$name")
           done
+          multi=()
           matrix=$(for name in "${picked[@]}"; do
-            jq -cn --arg name "$name" --arg runner "${runner[$name]}" --arg check "${check[$name]}" '$ARGS.named'
+            read -ra runners <<<"${runner[$name]}"
+            if (( ${#runners[@]} > 1 )); then
+              for r in "${runners[@]}"; do
+                [[ $r == *arm* ]] && arch=arm64 || arch=amd64
+                jq -cn --arg name "$name" --arg runner "$r" --arg check "${check[$name]}" --arg arch "$arch" '$ARGS.named'
+              done
+            else
+              jq -cn --arg name "$name" --arg runner "${runners[0]}" --arg check "${check[$name]}" --arg arch "" '$ARGS.named'
+            fi
+          done | jq -cs '{include: .}')
+          for name in "${picked[@]}"; do
+            read -ra runners <<<"${runner[$name]}"
+            (( ${#runners[@]} > 1 )) && multi+=("$name")
+          done
+          multiarch=$(for name in "${multi[@]}"; do
+            jq -cn --arg name "$name" '$ARGS.named'
           done | jq -cs '{include: .}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "any=$(( ${#picked[@]} > 0 ))" >> "$GITHUB_OUTPUT"
+          echo "multiarch=$multiarch" >> "$GITHUB_OUTPUT"
+          echo "any_multiarch=$(( ${#multi[@]} > 0 ))" >> "$GITHUB_OUTPUT"
           echo "Building: ${picked[*]:-nothing}"
 
   build:
@@ -99,7 +122,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     concurrency:
-      group: image-${{ matrix.name }}-${{ github.ref }}
+      group: image-${{ matrix.name }}-${{ matrix.arch || 'single' }}-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -208,12 +231,58 @@ jobs:
           ACTOR: ${{ github.actor }}
           TAG: ${{ steps.name.outputs.tag }}
           NAME: ${{ matrix.name }}
+          ARCH: ${{ matrix.arch }}
         run: |
           echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
-          podman push --digestfile digest "$TAG"
+          if [[ -n $ARCH ]]; then
+            podman push "$TAG" "docker://$TAG-$ARCH"
+          else
+            podman push --digestfile digest "$TAG"
+            image="ghcr.io/omacom/omarchy-local-ai/$NAME@$(cat digest)"
+            {
+              echo "Published \`$TAG\`. To run it, pin it in its runtime under \`runtimes/\`, then review and measure it:"
+              echo
+              echo '```toml'
+              echo "image = \"$image\""
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  manifest:
+    needs: [changes, build]
+    if: github.event_name != 'pull_request' && needs.changes.outputs.any_multiarch == '1'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.multiarch) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
+
+      - name: Publish multi-arch manifest
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          NAME: ${{ matrix.name }}
+          RUN: ${{ github.run_number }}
+        run: |
+          file=images/$NAME/Containerfile
+          for arg in BUILD TF_VERSION TF_REF COMMIT; do
+            version=$(sed -n "s/^ARG $arg=//p" "$file" | head -1)
+            [[ -n $version ]] && break
+          done
+          [[ $version =~ ^[0-9a-f]{40}$ ]] && version=${version:0:8}
+          tag="ghcr.io/omacom/omarchy-local-ai/$NAME:$version-$RUN"
+          echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+          podman manifest create "$tag"
+          podman manifest add "$tag" "docker://$tag-amd64"
+          podman manifest add "$tag" "docker://$tag-arm64"
+          podman manifest push --all --digestfile digest "$tag" "docker://$tag"
           image="ghcr.io/omacom/omarchy-local-ai/$NAME@$(cat digest)"
           {
-            echo "Published \`$TAG\`. To run it, pin it in its runtime under \`runtimes/\`, then review and measure it:"
+            echo "Published multi-arch \`$tag\` (amd64 + arm64). To run it, pin it in its runtime under \`runtimes/\`, then review and measure it:"
             echo
             echo '```toml'
             echo "image = \"$image\""

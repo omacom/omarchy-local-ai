@@ -1,0 +1,541 @@
+#!/opt/venv/bin/python3
+"""HTTP server for Stable Audio 3 LiteRT models, speaking ace-server's async job protocol.
+
+Every route requires `Authorization: Bearer <key>` matched in constant time against
+SA3_API_KEY or --api-key-file. Weights live read-only under --models; each stage
+(T5Gemma, DiT, SAME-L decoder) is loaded only while a song needs it and freed after,
+so the server holds minimal memory between songs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import hmac
+import http.server
+import json
+import math
+import os
+import queue
+import random
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import uuid
+from pathlib import Path
+
+SA3_ROOT = Path("/opt/sa3")
+if str(SA3_ROOT) not in sys.path:
+  sys.path.insert(0, str(SA3_ROOT))
+if str(SA3_ROOT / "scripts") not in sys.path:
+  sys.path.insert(0, str(SA3_ROOT / "scripts"))
+
+import numpy as np
+from models.defs import tflite_pipeline as P
+from rung_decoder import RungDecoder
+from rung_dit import RungDiT
+
+SAMPLE_RATE = 44100
+SAMPLES_PER_LATENT = 4096
+COND_TOKENS = 256
+COND_DIM = 768
+MAX_SECONDS = 180
+DEFAULT_STEPS = 8
+DEFAULT_BITRATE = 192
+MAX_BODY_BYTES = 1 << 20
+JOB_TTL_SECONDS = 600
+MAX_FINISHED_JOBS = 16
+BOUNDARY = b"sa3-batch-boundary"
+
+
+class CancelledError(Exception):
+  pass
+
+
+def detect_threads():
+  """Pick an XNNPACK thread count that uses the machine well without oversubscribing barriers."""
+  try:
+    cpus = len(os.sched_getaffinity(0))
+  except (AttributeError, OSError):
+    cpus = os.cpu_count() or 4
+  try:
+    quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+    if quota != "max" and int(quota) > 0 and int(period) > 0:
+      cpus = min(cpus, max(1, int(quota) // int(period)))
+  except (OSError, ValueError):
+    pass
+  return max(1, min(cpus, 16))
+
+
+def discover_models(models_dir: Path):
+  """Find the four files a Stable Audio 3 render needs under models_dir."""
+  found = {"dit": [], "decoder": [], "text_encoder": [], "tokenizer": []}
+  if not models_dir.is_dir():
+    return found
+  for path in sorted(models_dir.rglob("*")):
+    if not path.is_file():
+      continue
+    rel = path.relative_to(models_dir).as_posix()
+    name = path.name
+    if name.startswith("dit") and name.endswith(".tflite"):
+      found["dit"].append(rel)
+    elif name.startswith("dec") and name.endswith(".tflite"):
+      found["decoder"].append(rel)
+    elif ("t5gemma" in rel or name.startswith("encoder")) and name.endswith(".tflite"):
+      found["text_encoder"].append(rel)
+    elif name == "tokenizer.model":
+      found["tokenizer"].append(rel)
+  return found
+
+
+def decoder_trim(rel_path: str):
+  # SAME-L has a 12-latent SWA receptive field; SAME-S uses 16.
+  return 16 if "same-s" in rel_path else 12
+
+
+def apply_cfg(x, t, v_cond, v_uncond, cfg, apg=1.0):
+  sigma = np.float32(t)
+  xf = x.astype(np.float32)
+  cond_d = xf - v_cond.astype(np.float32) * sigma
+  uncond_d = xf - v_uncond.astype(np.float32) * sigma
+  diff = cond_d - uncond_d
+  if apg <= 0.0:
+    cfg_diff = diff
+  else:
+    norm = np.sqrt((cond_d * cond_d).sum(axis=(-2, -1), keepdims=True))
+    unit = cond_d / np.maximum(norm, 1e-8)
+    parallel = (diff * unit).sum(axis=(-2, -1), keepdims=True) * unit
+    diff_orth = diff - parallel
+    cfg_diff = diff_orth if apg >= 1.0 else (apg * diff_orth + (1.0 - apg) * diff)
+  cfg_d = cond_d + (cfg - 1.0) * cfg_diff
+  return ((xf - cfg_d) / sigma).astype(np.float32)
+
+
+def encode_mp3(audio: np.ndarray, bitrate_kbps: int = DEFAULT_BITRATE) -> bytes:
+  """Encode (2, T) float32 stereo audio in [-1, 1] at 44.1 kHz to MP3 bytes via ffmpeg."""
+  clipped = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
+  pcm = np.ascontiguousarray(np.rint(clipped * 32767.0).astype("<i2").T)
+  proc = subprocess.run(
+    [
+      "ffmpeg", "-v", "error",
+      "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "2", "-i", "pipe:0",
+      "-codec:a", "libmp3lame", "-b:a", f"{int(bitrate_kbps)}k",
+      "-f", "mp3", "pipe:1",
+    ],
+    input=pcm.tobytes(),
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    check=False,
+  )
+  if proc.returncode != 0 or not proc.stdout:
+    raise RuntimeError(f"ffmpeg failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
+  return proc.stdout
+
+
+class Job:
+  def __init__(self, job_id: str, kind: str, params: dict):
+    self.id = job_id
+    self.kind = kind
+    self.params = params
+    self.status = "queued"
+    self.error = ""
+    self.result = None
+    self.content_type = "application/json"
+    self.created_at = time.monotonic()
+    self.finished_at = 0.0
+    self.cancel_event = threading.Event()
+
+
+class Engine:
+  def __init__(self, models_dir: Path, threads: int, cache_dir: str):
+    self.models_dir = models_dir
+    self.threads = threads
+    self.cache_dir = cache_dir
+    self.models = discover_models(models_dir)
+    self.jobs: dict[str, Job] = {}
+    self.lock = threading.Lock()
+    self.work_queue: queue.Queue[str | None] = queue.Queue()
+    self.worker = threading.Thread(target=self._run_worker, daemon=True)
+    self.worker.start()
+
+  def _cache_file(self, name: str) -> str:
+    if not self.cache_dir:
+      return ""
+    try:
+      os.makedirs(self.cache_dir, exist_ok=True)
+      return os.path.join(self.cache_dir, name)
+    except OSError:
+      return ""
+
+  def props(self) -> dict:
+    return {
+      "models": self.models,
+      "vocals": False,
+      "max_seconds": MAX_SECONDS,
+      "threads": self.threads,
+    }
+
+  def _prune_locked(self):
+    now = time.monotonic()
+    finished = [j for j in self.jobs.values() if j.status in ("done", "failed", "cancelled")]
+    finished.sort(key=lambda j: j.finished_at)
+    for job in finished:
+      if now - job.finished_at > JOB_TTL_SECONDS or len(finished) > MAX_FINISHED_JOBS:
+        self.jobs.pop(job.id, None)
+        finished.remove(job)
+
+  def submit_lm(self, params: dict) -> Job:
+    # Instrumental-only compatibility: return a pass-through song record immediately.
+    job_id = uuid.uuid4().hex[:16]
+    job = Job(job_id, "lm", params)
+    caption = str(params.get("caption") or params.get("prompt") or "").strip()
+    duration = self._clamp_duration(params.get("duration", 60))
+    payload = [{
+      "caption": caption,
+      "lyrics": "[Instrumental]",
+      "duration": duration,
+      "bpm": 0,
+      "keyscale": "",
+    }]
+    job.result = json.dumps(payload).encode("utf-8")
+    job.content_type = "application/json"
+    job.status = "done"
+    job.finished_at = time.monotonic()
+    with self.lock:
+      self._prune_locked()
+      self.jobs[job_id] = job
+    return job
+
+  def submit_synth(self, params: dict) -> Job:
+    job_id = uuid.uuid4().hex[:16]
+    job = Job(job_id, "synth", params)
+    with self.lock:
+      self._prune_locked()
+      self.jobs[job_id] = job
+    self.work_queue.put(job_id)
+    return job
+
+  def get_job(self, job_id: str) -> Job | None:
+    with self.lock:
+      return self.jobs.get(job_id)
+
+  def cancel_job(self, job_id: str) -> bool:
+    with self.lock:
+      job = self.jobs.get(job_id)
+      if job is None:
+        return False
+      job.cancel_event.set()
+      if job.status == "queued":
+        job.status = "cancelled"
+        job.finished_at = time.monotonic()
+      return True
+
+  def shutdown(self):
+    with self.lock:
+      for job in self.jobs.values():
+        job.cancel_event.set()
+    self.work_queue.put(None)
+
+  @staticmethod
+  def _clamp_duration(value) -> float:
+    try:
+      seconds = float(value)
+    except (TypeError, ValueError):
+      seconds = 60.0
+    if not math.isfinite(seconds) or seconds <= 0:
+      seconds = 60.0
+    return max(1.0, min(float(MAX_SECONDS), seconds))
+
+  def _run_worker(self):
+    while True:
+      job_id = self.work_queue.get()
+      if job_id is None:
+        return
+      with self.lock:
+        job = self.jobs.get(job_id)
+        if job is None or job.cancel_event.is_set() or job.status == "cancelled":
+          if job is not None:
+            job.status = "cancelled"
+            job.finished_at = time.monotonic()
+          continue
+        job.status = "running"
+      try:
+        mp3 = self._synthesize(job.params, job.cancel_event)
+        body = (
+          b"--" + BOUNDARY + b"\r\n"
+          b"Content-Type: audio/mpeg\r\n\r\n"
+          + mp3
+          + b"\r\n--" + BOUNDARY + b"--\r\n"
+        )
+        with self.lock:
+          job.result = body
+          job.content_type = f"multipart/mixed; boundary={BOUNDARY.decode()}"
+          job.status = "done"
+          job.finished_at = time.monotonic()
+      except CancelledError:
+        with self.lock:
+          job.status = "cancelled"
+          job.finished_at = time.monotonic()
+      except Exception as exc:
+        print(f"error: synth job {job_id} failed: {exc}", file=sys.stderr, flush=True)
+        with self.lock:
+          job.error = str(exc)
+          job.status = "failed"
+          job.finished_at = time.monotonic()
+      finally:
+        gc.collect()
+
+  def _synthesize(self, params: dict, cancel_event: threading.Event) -> bytes:
+    missing = [part for part, paths in self.models.items() if not paths]
+    if missing:
+      raise RuntimeError(f"missing model parts: {', '.join(missing)}")
+
+    prompt = str(params.get("caption") or params.get("prompt") or "").strip()
+    duration = self._clamp_duration(params.get("duration", 60))
+    try:
+      steps = max(1, min(32, int(params.get("steps", DEFAULT_STEPS))))
+    except (TypeError, ValueError):
+      steps = DEFAULT_STEPS
+    try:
+      cfg = float(params.get("cfg", 1.0))
+      if not math.isfinite(cfg) or cfg <= 0:
+        cfg = 1.0
+    except (TypeError, ValueError):
+      cfg = 1.0
+    try:
+      seed = int(params.get("seed", -1))
+    except (TypeError, ValueError):
+      seed = -1
+    if seed < 0:
+      seed = random.randint(0, 2**31 - 1)
+    try:
+      bitrate = max(96, min(320, int(params.get("mp3_bitrate", DEFAULT_BITRATE))))
+    except (TypeError, ValueError):
+      bitrate = DEFAULT_BITRATE
+
+    t_lat = max(1, int(math.ceil(duration * SAMPLE_RATE / SAMPLES_PER_LATENT)))
+    target_samples = max(1, int(round(duration * SAMPLE_RATE)))
+
+    if cancel_event.is_set():
+      raise CancelledError()
+
+    t0 = time.monotonic()
+
+    # 1. Tokenize + T5Gemma text encoder
+    tok = P.Tokenizer(self.models_dir / self.models["tokenizer"][0])
+    ids, mask = tok(prompt)
+    t5 = P.T5GemmaTFLite(self.models_dir / self.models["text_encoder"][0], threads=self.threads)
+    t5_hidden = t5(ids, mask)
+    null_h = np.zeros((1, COND_TOKENS, COND_DIM), dtype=np.float32) if cfg != 1.0 else None
+    null_m = np.zeros((1, COND_TOKENS), dtype=np.float32) if cfg != 1.0 else None
+    del t5, tok
+    gc.collect()
+
+    if cancel_event.is_set():
+      raise CancelledError()
+
+    # 2. DiT sampling (weight cache in /tmp keeps multi-rung RAM flat; removed right after so idle RAM stays near zero)
+    dit_path = self.models_dir / self.models["dit"][0]
+    dit_cache = self._cache_file("dit.xnnwc")
+    try:
+      dit = RungDiT(
+        dit_path,
+        t_lat,
+        t5_hidden,
+        mask,
+        duration,
+        threads=self.threads,
+        cfg=cfg,
+        apg=1.0,
+        null_hidden=null_h,
+        null_mask=null_m,
+        weight_cache_path=dit_cache,
+        cfg_fn=apply_cfg,
+      )
+      sigmas = P.build_pingpong_schedule(steps, sigma_max=1.0)
+      x0, step_noise = P.make_noise(t_lat, steps, seed)
+
+      def checked_dit(x, t, cross=None, gcond=None):
+        if cancel_event.is_set():
+          raise CancelledError()
+        return dit(x, t, cross, gcond)
+
+      latents = P.sample(checked_dit, x0, step_noise, sigmas, None, None)
+      del dit, t5_hidden, mask, null_h, null_m, x0, step_noise
+      gc.collect()
+    finally:
+      if dit_cache and os.path.exists(dit_cache):
+        os.unlink(dit_cache)
+
+    if cancel_event.is_set():
+      raise CancelledError()
+
+    # 3. SAME audio decoder
+    dec_rel = self.models["decoder"][0]
+    dec_path = self.models_dir / dec_rel
+    dec_cache = self._cache_file("dec.xnnwc")
+    try:
+      dec = RungDecoder(
+        dec_path,
+        threads=self.threads,
+        weight_cache_path=dec_cache,
+        trim=decoder_trim(dec_rel),
+      )
+      audio = dec.decode(latents)
+      del dec, latents
+      gc.collect()
+    finally:
+      if dec_cache and os.path.exists(dec_cache):
+        os.unlink(dec_cache)
+
+    if cancel_event.is_set():
+      raise CancelledError()
+
+    mp3 = encode_mp3(audio[0, :, :target_samples], bitrate_kbps=bitrate)
+    elapsed = time.monotonic() - t0
+    print(f"synth: {duration:.0f}s audio in {elapsed:.1f}s ({duration / max(elapsed, 0.01):.2f}x realtime, seed={seed})", flush=True)
+    return mp3
+
+
+def make_handler(engine: Engine, api_key: str):
+  expected = f"Bearer {api_key}".encode("utf-8")
+
+  class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+      pass
+
+    def _authorized(self) -> bool:
+      header = str(self.headers.get("Authorization") or "").encode("utf-8")
+      return hmac.compare_digest(header, expected)
+
+    def _send(self, code: int, body: bytes, content_type: str = "application/json"):
+      self.send_response(code)
+      self.send_header("Content-Type", content_type)
+      self.send_header("Content-Length", str(len(body)))
+      self.send_header("Connection", "close")
+      self.end_headers()
+      if body:
+        self.wfile.write(body)
+
+    def _send_json(self, code: int, payload: dict):
+      self._send(code, json.dumps(payload).encode("utf-8"), "application/json")
+
+    def _read_json(self) -> dict | None:
+      try:
+        length = int(self.headers.get("Content-Length") or 0)
+      except ValueError:
+        return None
+      if length < 0 or length > MAX_BODY_BYTES:
+        return None
+      if length == 0:
+        return {}
+      raw = self.rfile.read(length)
+      try:
+        parsed = json.loads(raw)
+      except ValueError:
+        return None
+      return parsed if isinstance(parsed, dict) else None
+
+    def do_GET(self):
+      if not self._authorized():
+        return self._send_json(401, {"error": "unauthorized"})
+      parsed = urllib.parse.urlsplit(self.path)
+      if parsed.path == "/health":
+        return self._send_json(200, {"status": "ok"})
+      if parsed.path == "/props":
+        return self._send_json(200, engine.props())
+      if parsed.path == "/job":
+        query = urllib.parse.parse_qs(parsed.query)
+        job_id = (query.get("id") or [""])[0]
+        job = engine.get_job(job_id)
+        if job is None:
+          return self._send_json(404, {"error": "unknown job"})
+        if query.get("result"):
+          if job.status != "done" or job.result is None:
+            return self._send_json(409, {"error": f"job is {job.status}"})
+          return self._send(200, job.result, job.content_type)
+        payload = {"id": job.id, "status": job.status}
+        if job.error:
+          payload["error"] = job.error
+        return self._send_json(200, payload)
+      return self._send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+      if not self._authorized():
+        return self._send_json(401, {"error": "unauthorized"})
+      parsed = urllib.parse.urlsplit(self.path)
+      if parsed.path == "/lm":
+        body = self._read_json()
+        if body is None:
+          return self._send_json(400, {"error": "invalid json"})
+        job = engine.submit_lm(body)
+        return self._send_json(200, {"id": job.id})
+      if parsed.path == "/synth":
+        body = self._read_json()
+        if body is None:
+          return self._send_json(400, {"error": "invalid json"})
+        job = engine.submit_synth(body)
+        return self._send_json(200, {"id": job.id})
+      if parsed.path == "/job":
+        query = urllib.parse.parse_qs(parsed.query)
+        job_id = (query.get("id") or [""])[0]
+        if query.get("cancel"):
+          if not engine.cancel_job(job_id):
+            return self._send_json(404, {"error": "unknown job"})
+          return self._send_json(200, {"cancelled": True})
+      return self._send_json(404, {"error": "not found"})
+
+  return Handler
+
+
+def read_key(args) -> str:
+  if args.api_key_file:
+    return Path(args.api_key_file).read_text(encoding="utf-8").strip()
+  return os.environ.get("SA3_API_KEY", "").strip()
+
+
+def main():
+  parser = argparse.ArgumentParser(prog="sa3-server")
+  parser.add_argument("--host", default="127.0.0.1")
+  parser.add_argument("--port", type=int, default=8085)
+  parser.add_argument("--models", required=True)
+  parser.add_argument("--api-key-file", default="")
+  parser.add_argument("--threads", type=int, default=0, help="XNNPACK CPU threads (0 = auto)")
+  parser.add_argument("--cache-dir", default="/tmp/sa3-cache", help="XNNPACK weight cache directory (empty disables)")
+  args = parser.parse_args()
+
+  api_key = read_key(args)
+  if not api_key:
+    print("error: SA3_API_KEY or --api-key-file is required", file=sys.stderr, flush=True)
+    sys.exit(2)
+
+  threads = args.threads if args.threads > 0 else detect_threads()
+  engine = Engine(Path(args.models), threads=threads, cache_dir=args.cache_dir)
+  print(f"sa3-server: listening on {args.host}:{args.port} (threads={threads}, models={engine.models})", flush=True)
+
+  class Server(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+  server = Server((args.host, args.port), make_handler(engine, api_key))
+
+  def stop(*_):
+    engine.shutdown()
+    threading.Thread(target=server.shutdown, daemon=True).start()
+
+  signal.signal(signal.SIGTERM, stop)
+  signal.signal(signal.SIGINT, stop)
+  try:
+    server.serve_forever()
+  finally:
+    server.server_close()
+  return 0
+
+
+if __name__ == "__main__":
+  sys.exit(main())
