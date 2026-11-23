@@ -10,13 +10,13 @@ so the server holds minimal memory between songs.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import gc
 import hmac
 import http.server
 import json
 import math
 import os
-import queue
 import random
 import signal
 import subprocess
@@ -46,12 +46,18 @@ MAX_SECONDS = 180
 DEFAULT_STEPS = 8
 DEFAULT_BITRATE = 192
 MAX_BODY_BYTES = 1 << 20
+MAX_PROMPT_CHARS = 4096
+MAX_PENDING_JOBS = 8
 JOB_TTL_SECONDS = 600
-MAX_FINISHED_JOBS = 16
+MAX_FINISHED_JOBS = 8
 BOUNDARY = b"sa3-batch-boundary"
 
 
 class CancelledError(Exception):
+  pass
+
+
+class QueueFullError(Exception):
   pass
 
 
@@ -157,7 +163,9 @@ class Engine:
     self.models = discover_models(models_dir)
     self.jobs: dict[str, Job] = {}
     self.lock = threading.Lock()
-    self.work_queue: queue.Queue[str | None] = queue.Queue()
+    self.cond = threading.Condition(self.lock)
+    self.pending_queue: deque[str] = deque()
+    self.stopping = False
     self.worker = threading.Thread(target=self._run_worker, daemon=True)
     self.worker.start()
 
@@ -178,123 +186,34 @@ class Engine:
       "threads": self.threads,
     }
 
-  def _prune_locked(self):
+  def _prune_locked(self) -> bool:
+    """Drop expired finished jobs and cap retained finished results without mutating during iteration."""
     now = time.monotonic()
-    finished = [j for j in self.jobs.values() if j.status in ("done", "failed", "cancelled")]
-    finished.sort(key=lambda j: j.finished_at)
+    finished = sorted(
+      (j for j in self.jobs.values() if j.status in ("done", "failed", "cancelled")),
+      key=lambda j: j.finished_at,
+    )
+    pruned = False
+    remaining = len(finished)
     for job in finished:
-      if now - job.finished_at > JOB_TTL_SECONDS or len(finished) > MAX_FINISHED_JOBS:
+      if now - job.finished_at >= JOB_TTL_SECONDS or remaining > MAX_FINISHED_JOBS:
         self.jobs.pop(job.id, None)
-        finished.remove(job)
+        remaining -= 1
+        pruned = True
+    return pruned
 
-  def submit_lm(self, params: dict) -> Job:
-    # Instrumental-only compatibility: return a pass-through song record immediately.
-    job_id = uuid.uuid4().hex[:16]
-    job = Job(job_id, "lm", params)
-    caption = str(params.get("caption") or params.get("prompt") or "").strip()
-    duration = self._clamp_duration(params.get("duration", 60))
-    payload = [{
-      "caption": caption,
-      "lyrics": "[Instrumental]",
-      "duration": duration,
-      "bpm": 0,
-      "keyscale": "",
-    }]
-    job.result = json.dumps(payload).encode("utf-8")
-    job.content_type = "application/json"
-    job.status = "done"
-    job.finished_at = time.monotonic()
-    with self.lock:
-      self._prune_locked()
-      self.jobs[job_id] = job
-    return job
+  def _next_expiry_timeout_locked(self) -> float | None:
+    """Seconds until the oldest finished job expires, or None when idle with nothing to expire."""
+    finished = [j.finished_at for j in self.jobs.values() if j.status in ("done", "failed", "cancelled")]
+    if not finished:
+      return None
+    return max(0.0, min(finished) + JOB_TTL_SECONDS - time.monotonic())
 
-  def submit_synth(self, params: dict) -> Job:
-    job_id = uuid.uuid4().hex[:16]
-    job = Job(job_id, "synth", params)
-    with self.lock:
-      self._prune_locked()
-      self.jobs[job_id] = job
-    self.work_queue.put(job_id)
-    return job
-
-  def get_job(self, job_id: str) -> Job | None:
-    with self.lock:
-      return self.jobs.get(job_id)
-
-  def cancel_job(self, job_id: str) -> bool:
-    with self.lock:
-      job = self.jobs.get(job_id)
-      if job is None:
-        return False
-      job.cancel_event.set()
-      if job.status == "queued":
-        job.status = "cancelled"
-        job.finished_at = time.monotonic()
-      return True
-
-  def shutdown(self):
-    with self.lock:
-      for job in self.jobs.values():
-        job.cancel_event.set()
-    self.work_queue.put(None)
-
-  @staticmethod
-  def _clamp_duration(value) -> float:
-    try:
-      seconds = float(value)
-    except (TypeError, ValueError):
-      seconds = 60.0
-    if not math.isfinite(seconds) or seconds <= 0:
-      seconds = 60.0
-    return max(1.0, min(float(MAX_SECONDS), seconds))
-
-  def _run_worker(self):
-    while True:
-      job_id = self.work_queue.get()
-      if job_id is None:
-        return
-      with self.lock:
-        job = self.jobs.get(job_id)
-        if job is None or job.cancel_event.is_set() or job.status == "cancelled":
-          if job is not None:
-            job.status = "cancelled"
-            job.finished_at = time.monotonic()
-          continue
-        job.status = "running"
-      try:
-        mp3 = self._synthesize(job.params, job.cancel_event)
-        body = (
-          b"--" + BOUNDARY + b"\r\n"
-          b"Content-Type: audio/mpeg\r\n\r\n"
-          + mp3
-          + b"\r\n--" + BOUNDARY + b"--\r\n"
-        )
-        with self.lock:
-          job.result = body
-          job.content_type = f"multipart/mixed; boundary={BOUNDARY.decode()}"
-          job.status = "done"
-          job.finished_at = time.monotonic()
-      except CancelledError:
-        with self.lock:
-          job.status = "cancelled"
-          job.finished_at = time.monotonic()
-      except Exception as exc:
-        print(f"error: synth job {job_id} failed: {exc}", file=sys.stderr, flush=True)
-        with self.lock:
-          job.error = str(exc)
-          job.status = "failed"
-          job.finished_at = time.monotonic()
-      finally:
-        gc.collect()
-
-  def _synthesize(self, params: dict, cancel_event: threading.Event) -> bytes:
-    missing = [part for part, paths in self.models.items() if not paths]
-    if missing:
-      raise RuntimeError(f"missing model parts: {', '.join(missing)}")
-
-    prompt = str(params.get("caption") or params.get("prompt") or "").strip()
-    duration = self._clamp_duration(params.get("duration", 60))
+  @classmethod
+  def _sanitize_synth_params(cls, params: dict) -> dict:
+    """Extract only bounded typed synthesis fields so raw request payloads are never retained."""
+    prompt = str(params.get("caption") or params.get("prompt") or "").strip()[:MAX_PROMPT_CHARS]
+    duration = cls._clamp_duration(params.get("duration", 60))
     try:
       steps = max(1, min(32, int(params.get("steps", DEFAULT_STEPS))))
     except (TypeError, ValueError):
@@ -309,12 +228,175 @@ class Engine:
       seed = int(params.get("seed", -1))
     except (TypeError, ValueError):
       seed = -1
-    if seed < 0:
-      seed = random.randint(0, 2**31 - 1)
     try:
       bitrate = max(96, min(320, int(params.get("mp3_bitrate", DEFAULT_BITRATE))))
     except (TypeError, ValueError):
       bitrate = DEFAULT_BITRATE
+    return {
+      "prompt": prompt,
+      "duration": duration,
+      "steps": steps,
+      "cfg": cfg,
+      "seed": seed,
+      "mp3_bitrate": bitrate,
+    }
+
+  def submit_lm(self, params: dict) -> Job:
+    # Instrumental-only compatibility: return a pass-through song record immediately.
+    job_id = uuid.uuid4().hex[:16]
+    caption = str(params.get("caption") or params.get("prompt") or "").strip()[:MAX_PROMPT_CHARS]
+    duration = self._clamp_duration(params.get("duration", 60))
+    job = Job(job_id, "lm", {})
+    payload = [{
+      "caption": caption,
+      "lyrics": "[Instrumental]",
+      "duration": duration,
+      "bpm": 0,
+      "keyscale": "",
+    }]
+    job.result = json.dumps(payload).encode("utf-8")
+    job.content_type = "application/json"
+    job.status = "done"
+    job.finished_at = time.monotonic()
+    with self.cond:
+      self.jobs[job_id] = job
+      self._prune_locked()
+      self.cond.notify()
+    return job
+
+  def submit_synth(self, params: dict) -> Job:
+    clean = self._sanitize_synth_params(params)
+    job_id = uuid.uuid4().hex[:16]
+    job = Job(job_id, "synth", clean)
+    with self.cond:
+      self._prune_locked()
+      pending = sum(1 for j in self.jobs.values() if j.status in ("queued", "running"))
+      if pending >= MAX_PENDING_JOBS:
+        raise QueueFullError(f"at most {MAX_PENDING_JOBS} synthesis jobs may be active or queued")
+      self.jobs[job_id] = job
+      self.pending_queue.append(job_id)
+      self.cond.notify()
+    return job
+
+  def get_job(self, job_id: str) -> Job | None:
+    with self.cond:
+      self._prune_locked()
+      return self.jobs.get(job_id)
+
+  def cancel_job(self, job_id: str) -> bool:
+    with self.cond:
+      self._prune_locked()
+      job = self.jobs.get(job_id)
+      if job is None:
+        return False
+      job.cancel_event.set()
+      if job.status == "queued":
+        try:
+          self.pending_queue.remove(job_id)
+        except ValueError:
+          pass
+        job.params = {}
+        job.status = "cancelled"
+        job.finished_at = time.monotonic()
+        self._prune_locked()
+        self.cond.notify()
+      return True
+
+  def shutdown(self):
+    with self.cond:
+      self.stopping = True
+      for job in self.jobs.values():
+        job.cancel_event.set()
+      self.pending_queue.clear()
+      self.cond.notify_all()
+
+  @staticmethod
+  def _clamp_duration(value) -> float:
+    try:
+      seconds = float(value)
+    except (TypeError, ValueError):
+      seconds = 60.0
+    if not math.isfinite(seconds) or seconds <= 0:
+      seconds = 60.0
+    return max(1.0, min(float(MAX_SECONDS), seconds))
+
+  def _run_worker(self):
+    while True:
+      with self.cond:
+        pruned = self._prune_locked()
+        while not self.stopping and not self.pending_queue:
+          timeout = self._next_expiry_timeout_locked()
+          if timeout is not None and timeout <= 0.0:
+            pruned = self._prune_locked() or pruned
+            continue
+          self.cond.wait(timeout=timeout)
+          pruned = self._prune_locked() or pruned
+          if pruned and not self.pending_queue and not self.stopping:
+            break
+        if self.stopping:
+          return
+        if not self.pending_queue:
+          job = None
+        else:
+          job_id = self.pending_queue.popleft()
+          job = self.jobs.get(job_id)
+          if job is None or job.cancel_event.is_set() or job.status == "cancelled":
+            if job is not None:
+              job.params = {}
+              job.status = "cancelled"
+              job.finished_at = time.monotonic()
+              pruned = self._prune_locked() or pruned
+            job = None
+          else:
+            job.status = "running"
+            params = job.params
+            job.params = {}
+      if pruned and job is None:
+        gc.collect()
+      if job is None:
+        continue
+      try:
+        mp3 = self._synthesize(params, job.cancel_event)
+        body = (
+          b"--" + BOUNDARY + b"\r\n"
+          b"Content-Type: audio/mpeg\r\n\r\n"
+          + mp3
+          + b"\r\n--" + BOUNDARY + b"--\r\n"
+        )
+        with self.cond:
+          job.result = body
+          job.content_type = f"multipart/mixed; boundary={BOUNDARY.decode()}"
+          job.status = "done"
+          job.finished_at = time.monotonic()
+          self._prune_locked()
+      except CancelledError:
+        with self.cond:
+          job.status = "cancelled"
+          job.finished_at = time.monotonic()
+          self._prune_locked()
+      except Exception as exc:
+        print(f"error: synth job {job.id} failed: {exc}", file=sys.stderr, flush=True)
+        with self.cond:
+          job.error = str(exc)
+          job.status = "failed"
+          job.finished_at = time.monotonic()
+          self._prune_locked()
+      finally:
+        gc.collect()
+
+  def _synthesize(self, params: dict, cancel_event: threading.Event) -> bytes:
+    missing = [part for part, paths in self.models.items() if not paths]
+    if missing:
+      raise RuntimeError(f"missing model parts: {', '.join(missing)}")
+
+    prompt = params["prompt"]
+    duration = params["duration"]
+    steps = params["steps"]
+    cfg = params["cfg"]
+    seed = params["seed"]
+    if seed < 0:
+      seed = random.randint(0, 2**31 - 1)
+    bitrate = params["mp3_bitrate"]
 
     t_lat = max(1, int(math.ceil(duration * SAMPLE_RATE / SAMPLES_PER_LATENT)))
     target_samples = max(1, int(round(duration * SAMPLE_RATE)))
@@ -479,7 +561,10 @@ def make_handler(engine: Engine, api_key: str):
         body = self._read_json()
         if body is None:
           return self._send_json(400, {"error": "invalid json"})
-        job = engine.submit_synth(body)
+        try:
+          job = engine.submit_synth(body)
+        except QueueFullError as exc:
+          return self._send_json(429, {"error": str(exc)})
         return self._send_json(200, {"id": job.id})
       if parsed.path == "/job":
         query = urllib.parse.parse_qs(parsed.query)
