@@ -55,7 +55,7 @@ The real records are the examples and source of values:
 | [runtimes/](../runtimes/) | Digest-pinned image, `gpus` (the vendors, `amd`, `intel` or `nvidia`, GPU classes such as `amd-strix-halo`, or `["cpu"]` for CPU-only runtimes with no GPU devices, each reachable through its devices), tier, port, command, standard input mappings, reserved options, nonempty `health.probe` argv and `api` (`openai`, the default, `sdcpp`, `acestep` or `sa3`), which selects the post-start check; an `openai` runtime must map `alias`. A paired runtime adds `listen` (its bind flags), `@PORT@` in its probe and a `[pair]` table: `nodes = 2`, `master_port`, optional `prepare` and `worker` commands (without one, rank 1 runs the head's own invocation, for servers that compare the ranks' arguments), an optional served `model` under `/prepared`, an optional `state` path where each rank's folder is mounted writable for the server's caches (else read-only at `/prepared`), and `env`, `head_env` and `worker_env` (any names but the link's `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA` and `NCCL_IB_GID_INDEX`, which the engine sets), whose values may hold `@RANK@`, `@WORLD@`, `@MASTER_ADDR@`, `@MASTER_PORT@`, `@CTX@`, `@RDMA_DEVICES@`, `@GID_INDEX@` and `@SOCKET_IFNAME@`. |
 | [reviews/](../reviews/) | Third-party image digest, publisher, reviewer, date, license URL/hash and checked properties. |
 | [measurements/](../measurements/) | Speed and memory on one machine class, the evidence `best.toml` recommends by, artifact identities, context, memory, load time and short, long and code-edit prompt timings; for an image model, seconds per image at a size and step count instead. |
-| [best.toml](../best.toml) | Unique classes requiring both `gpu` and `ram_class`, with an ordered list of measured text recipes (`recipes`) and optionally of measured image models (`images`), each holding only its kind. |
+| [best.toml](../best.toml) | Unique classes requiring `gpu` and one of `ram_class` or `vram_class`, with an ordered list of measured text recipes (`recipes`) and optionally of measured image models (`images`), each holding only its kind. |
 
 IDs contain lowercase alphanumeric components separated by single dots or hyphens.
 Artifact repositories are `owner/name`, revisions are 40-hex commits, and files,
@@ -81,7 +81,7 @@ rejected. `validate <catalog-dir>` checks the records and referenced evidence;
 
 ## Lifecycle
 
-`use best <kind>` (`text`, `image`, `video` or `music`) matches the GPU class and RAM class, tries the
+`use best <kind>` (`text`, `image`, `video` or `music`) matches the GPU class and its memory class, tries the
 class's recipes of that kind (`recipes` for text, else `images`, `videos` or `music` in `best.toml`)
 in order; `use best` alone lists each kind's pick for this machine and sets nothing up. It checks that the runtime runs on the GPU and that the recipe fits, and
 chooses the largest fitting context, and at the same context the variant with the larger memory peak that fits.
@@ -92,6 +92,13 @@ the runtime's image works on the GPU (its `gpus`) and whether a variant fits the
 RAM. A measurement on the machine's class is not needed; it gives the panel speeds to show, and
 `best.toml`, kept by hand and only for measured classes, decides what is recommended. Admission
 also checks current free RAM and GPU memory and reserves 8 GiB for the desktop.
+A discrete NVIDIA GPU (an RTX 3090, say) is its own family, `nvidia-rtx3090`, named from `nvidia-smi`, and
+its memory class is its VRAM rounded up to 8, 12, 16, 24, 32, 48, 80 or 96 GB: a `[[hardware]]` or `[[class]]`
+entry for it says `vram_class = 24`, not `ram_class`. System RAM then only has to hold the recipe's
+`peak_ram_gib`, which admission checks beside the VRAM. Unified-memory GPUs (GB10, N1x, Strix) keep `ram_class`.
+A model set up on a discrete card is bound to it by its `nvidia-smi` UUID, both in its container and in
+every later start's memory check, so a renumbering or a second card of the same family can't split the two;
+`--gpu` takes a UUID as well as a family.
 An Intel GPU is integrated graphics on the `xe` kernel driver (Lunar Lake and newer), named by
 `INTEL_FAMILIES` or else `intel-xe-<device id>`, addressing
 three quarters of RAM up to the kernel's `ttm.pages_limit`; `use` raises that limit as it does for a unified AMD GPU, so a model fits by the three quarters. Memory a GPU driver freed and still
