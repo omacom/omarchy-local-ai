@@ -13,6 +13,10 @@ download_gib = 22.64
 gpu = "amd-strix-halo"
 measured = "measurements/minimax-h3-sdcpp-strix-halo.toml"
 
+[[hardware]]
+gpu = "amd-strix-point"
+measured = "measurements/minimax-h3-sdcpp-strix-point.toml"
+
 [[artifacts]]
 repo = "leejet/MiniMax-H3-GGUF"
 revision = "eee1dd2f05b755b28bd1b785925cbfeebfcba9d9"
@@ -36,11 +40,12 @@ vae = "vae/minimax_h3_video_vae_fp16.safetensors"
 audio_vae = "vae/minimax_h3_audio_vae_fp32.safetensors"
 lora = "loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
 
-# Measured on Strix Halo with --flash-attn on and --vae-tiling: 19.6 GiB of GPU memory at its peak
-# (~21.2 GiB RAM delta), making a 2.3 s 864x480 clip in 206 s.
+# Measured with --flash-attn on and --vae-tiling: 19.6 GiB GPU peak on Strix Halo (206 s for a
+# 2.3 s 864x480 clip) and 22.4 GiB GPU peak / ~24.8 GiB RAM delta on Strix Point (385 s). That
+# leaves too little headroom beside the desktop on 32 GB, so 64 GB is the floor.
 [[variant]]
-peak_ram_gib = 24
-peak_gpu_gib = 22
+peak_ram_gib = 25
+peak_gpu_gib = 23
 
 # Clips are 24 fps, up to the 15 s H3 is made for. With Flash Attention and VAE tiling, peak GPU
 # memory stays flat at 19.6-19.7 GiB between 56 and 124 frames, and host RAM grows by ~0.7 GiB
