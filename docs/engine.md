@@ -81,11 +81,7 @@ rejected. `validate <catalog-dir>` checks the records and referenced evidence;
 
 ## Lifecycle
 
-<<<<<<< HEAD
 `use best <kind>` (`text`, `image`, `video` or `music`) matches the GPU class and memory class (`ram_class` for unified GPUs, `vram_class` for discrete NVIDIA GPUs; or, for a kind that class doesn't list, the nearest smaller memory class that does), tries the
-=======
-`use best <kind>` (`text`, `image`, `video` or `music`) matches the GPU class and memory class (`ram_class` for unified GPUs, `vram_class` for discrete NVIDIA GPUs), tries the
->>>>>>> f23a89c (fix(gpu): bind selected NVIDIA GPU via CDI UUID and tighten CI/docs)
 class's recipes of that kind (`recipes` for text, else `images`, `videos` or `music` in `best.toml`)
 in order; `use best` alone lists each kind's pick for this machine and sets nothing up. It checks that the runtime runs on the GPU and that the recipe fits, and
 chooses the largest fitting context, and at the same context the variant with the larger memory peak that fits.
