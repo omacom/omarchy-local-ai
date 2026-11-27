@@ -227,11 +227,28 @@ found_amd = a.amd_gpus(str(kfd), str(amd_drm))
 check("display-only AMD iGPUs (< 8 CUs) are excluded while APUs and discrete cards stay",
       [g["family"] for g in found_amd] == ["amd-gfx1103", "amd-strix-halo", "amd-gfx1100"], str([g["family"] for g in found_amd]))
 
+# Discrete NVIDIA GPUs on x86: detected via nvidia-smi, classed by vram_class, and outrank iGPUs.
+smi_rows = [
+    "0, NVIDIA GeForce RTX 5070 Laptop GPU, 8151, 12.0, GPU-1111",
+    "1, NVIDIA GeForce RTX 4090, 24576, 8.9, GPU-2222",
+    "2, NVIDIA GeForce RTX 5090, 32607, 12.0, GPU-3333",
+]
+with patch.object(a, "_nvidia_smi", return_value=smi_rows):
+  nv_cards = a.nvidia_gpus()
+check("discrete NVIDIA GPUs parse name, VRAM, vram_class and unified=False",
+      [(g["family"], g["vram_class"], g["unified"]) for g in nv_cards] == [
+          ("nvidia-rtx5070-laptop", 8, False),
+          ("nvidia-rtx4090", 24, False),
+          ("nvidia-rtx5090", 32, False),
+      ], str(nv_cards))
+with patch.object(a, "platform_name", return_value="aarch64-gb10"), patch.object(a, "amd_gpus", return_value=[]), \
+     patch.object(a, "intel_gpus", return_value=[]), patch.object(a, "nvidia_gpus", side_effect=AssertionError("unified platform should not probe discrete nvidia")), \
+     patch.object(a, "meminfo", return_value={"MemTotal": 120 * 2**30}):
+  check("unified NVIDIA platforms do not also probe discrete NVIDIA cards", [g["family"] for g in a.machine_profile()["gpus"]] == ["nvidia-gb10"])
+
 igpu_big_gtt = {"vendor": "amd", "family": "amd-gfx1103", "render_node": "/dev/dri/renderD128", "unified": True, "memory_gib": 54.4}
 dgpu_card = {"vendor": "amd", "family": "amd-gfx1100", "render_node": "/dev/dri/renderD129", "unified": False, "memory_gib": 24.0}
 dual_amd = {"platform": "x86", "ram_gib": 64, "ram_class": 64, "gpus": [igpu_big_gtt, dgpu_card]}
-check("a discrete GPU outranks an integrated GPU even when GTT exceeds VRAM",
-      a.choose_gpu(dual_amd) == dgpu_card)
 small_img = {"kind": "image", "variant": [{"peak_ram_gib": 11, "peak_gpu_gib": 11}]}
 big_vid = {"kind": "video", "variant": [{"peak_ram_gib": 38, "peak_gpu_gib": 38}]}
 amd_rt = {"gpus": ["amd"]}
@@ -245,9 +262,42 @@ dual_cat = SimpleNamespace(
 )
 check("resolve_best preserves the fitting GPU it selected",
       a.resolve_best(dual_cat, dual_amd, field="videos")[3] == igpu_big_gtt)
+dgpu_5070 = nv_cards[0]
+dual_profile = {"platform": "x86", "ram_gib": 30.63, "ram_class": 32, "gpus": [igpu_big_gtt, dgpu_5070]}
+check("a discrete GPU outranks an integrated GPU even when GTT exceeds VRAM", a.choose_gpu(dual_profile) == dgpu_5070)
 pair_gpu = {"vendor": "nvidia", "family": "nvidia-gb10-pair", "nodes": 2, "unified": True, "memory_gib": 120}
-check("a paired unified GPU still outranks a single discrete GPU",
-      a.choose_gpu({"platform": "aarch64-gb10", "ram_gib": 120, "ram_class": 128, "gpus": [dgpu_card, pair_gpu]}) == pair_gpu)
+check("a paired unified GPU still outranks a single discrete GPU", a.choose_gpu({"platform": "aarch64-gb10", "ram_gib": 120, "ram_class": 128, "gpus": [dgpu_5070, pair_gpu]}) == pair_gpu)
+
+with patch.object(a, "_nvidia_smi", return_value=["7168"]), patch.object(a, "meminfo", return_value={"MemAvailable": 20 * 2**30}):
+  check("free memory on a discrete NVIDIA GPU reads free VRAM from nvidia-smi", a.free_memory(dgpu_5070) == (20.0, 7.0))
+
+nv_cg = Path(os.environ["HOME"]) / "nv-cg"
+(nv_cg / "unit").mkdir(parents=True)
+(nv_cg / "unit" / "memory.stat").write_text(f"anon {2**30}\n")
+(nv_cg / "unit" / "cgroup.procs").write_text("424242\n")
+with patch.object(a.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="424242, 4096\n999999, 8192\n")):
+  check("held_bytes includes discrete NVIDIA VRAM held by processes in the cgroup",
+        a.held_bytes("/unit", str(nv_cg), str(nv_cg / "no-proc")) == 5 * 2**30)
+
+cdi_rt = {"run": {"devices": ["cdi-nvidia"]}}
+check("device_lines binds the selected discrete NVIDIA card by UUID and keeps all for unified NVIDIA",
+      a.device_lines(cdi_rt, nv_cards[0]) == ["AddDevice=nvidia.com/gpu=GPU-1111"]
+      and a.device_lines(cdi_rt, nv_cards[1]) == ["AddDevice=nvidia.com/gpu=GPU-2222"]
+      and a.device_lines(cdi_rt, {"vendor": "nvidia", "family": "nvidia-gb10", "unified": True}) == ["AddDevice=nvidia.com/gpu=all"])
+
+# Discrete vram_class matching, measurement lookup and validation.
+vram_entry = {"gpu": "nvidia-rtx4090", "vram_class": 24, "recipes": ["dgpu-model"]}
+vram_recipe = dict(recipe, runtime="cuda", hardware=[{"gpu": "nvidia-rtx4090", "measured": "gb10.toml"}])
+check("vram_class matches a discrete GPU regardless of host ram_class, inheriting smaller classes only",
+      a.match_class({"class": [vram_entry]}, {"ram_class": 64, "platform": "x86"}, nv_cards[1]) == vram_entry
+      and a.match_class({"class": [dict(vram_entry, vram_class=16)]}, {"ram_class": 64, "platform": "x86"}, nv_cards[1]) == dict(vram_entry, vram_class=16)
+      and a.match_class({"class": [dict(vram_entry, vram_class=32)]}, {"ram_class": 64, "platform": "x86"}, nv_cards[1]) is None)
+check("load_measurement resolves per-chip entries for discrete GPUs",
+      a.load_measurement(SimpleNamespace(root=str(shared)), vram_recipe, {"ram_class": 64, "platform": "x86"}, nv_cards[1]).get("long", {}).get("decode_tok_s") == 60.0)
+check("best entries require exactly one of ram_class or vram_class, and hardware rejects vram_class",
+      not a.validate_best({"class": [vram_entry]}, {"dgpu-model": vram_recipe})
+      and any("ram_class" in e and "vram_class" in e for e in a.validate_best({"class": [dict(vram_entry, ram_class=64)]}, {"dgpu-model": vram_recipe}))
+      and any("vram_class" in e for e in a.validate_recipe("m", dict(vram_recipe, hardware=[{"gpu": "nvidia-rtx4090", "vram_class": 24, "measured": "gb10.toml"}]), {"cuda": dict(runtime, gpus=["nvidia"], run={"devices": ["cdi-nvidia"]})})))
 check("a runtime runs on the vendors and classes it lists, and no other",
       a.runtime_supports(dict(runtime, gpus=["intel"]), lunar[0]) and a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), arc[0])
       and not a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), lunar[0]) and not a.runtime_supports(dict(runtime, gpus=["amd"]), arc[0]))
@@ -284,13 +334,13 @@ with patch.object(a, "meminfo", return_value={"MemFree": 16 * 2**30}), patch("bu
 
 # A 64 GB Strix Halo on a stock kernel: the GPU maps half of RAM until use raises the cap.
 halo = {"vendor": "amd", "family": "amd-strix-halo", "memory_gib": 31.6, "unified": True}
-with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[dict(halo)]), patch.object(a, "intel_gpus", return_value=[]), patch.object(a, "meminfo", return_value={"MemTotal": 62 * 2**30}):
+with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[dict(halo)]), patch.object(a, "intel_gpus", return_value=[]), patch.object(a, "nvidia_gpus", return_value=[]), patch.object(a, "meminfo", return_value={"MemTotal": 62 * 2**30}):
   halo = a.machine_profile()["gpus"][0]
 needs_more = dict(variant, peak_gpu_gib=38, peak_ram_gib=38)
 check("a unified AMD GPU fits by the cap use can raise it to", halo["max_memory_gib"] == 54 and a.fits(needs_more, profile, halo)[0])
 # A 64 GB Arc B390 on a stock kernel: the page limit holds it to half of RAM, Mesa to three quarters.
 arc_b390 = {"vendor": "intel", "family": "intel-arc-b390", "memory_gib": 31.15, "unified": True}
-with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "intel_gpus", return_value=[dict(arc_b390)]), patch.object(a, "meminfo", return_value={"MemTotal": 62.3 * 2**30}):
+with patch.object(a, "platform_name", return_value="x86"), patch.object(a, "amd_gpus", return_value=[]), patch.object(a, "intel_gpus", return_value=[dict(arc_b390)]), patch.object(a, "nvidia_gpus", return_value=[]), patch.object(a, "meminfo", return_value={"MemTotal": 62.3 * 2**30}):
   arc_b390 = a.machine_profile()["gpus"][0]
 check("an Intel GPU fits by the three quarters Mesa lets it address once use raises the cap", abs(arc_b390["max_memory_gib"] - 46.7) < 0.1 and a.fits(needs_more, profile, arc_b390)[0]
       and not a.fits(dict(needs_more, peak_gpu_gib=48), profile, arc_b390)[0])
@@ -1346,6 +1396,24 @@ with patch.dict(os.environ, {"HF_TOKEN": "hf_secret_value", "OMARCHY_LOCAL_AI_CA
 check("a detached setup never puts the token on a command line", not any("hf_secret_value" in arg for arg in argv) and "--setenv=HF_TOKEN" in argv and env["HF_TOKEN"] == "hf_secret_value")
 check("a detached setup gets the catalog as an absolute path", env["OMARCHY_LOCAL_AI_CATALOG"] == os.path.abspath("relative/catalog"))
 a.clear_installing(rid)
+detach_cat = SimpleNamespace(
+  recipes={"big-vid": dict(kind="video", runtime="amd-rt", hardware=[{"gpu": "amd-gfx1103", "ram_class": 64, "measured": "m.toml"}], variant=[{"ctx": 4096, "peak_ram_gib": 38, "peak_gpu_gib": 38}])},
+  runtimes={"amd-rt": {"gpus": ["amd"]}},
+  best={"class": [{"gpu": "amd-gfx1103", "ram_class": 64, "recipes": ["big-vid"], "videos": ["big-vid"]}]},
+)
+detach_prof = {"platform": "x86", "ram_gib": 64, "ram_class": 64, "gpus": [
+  {"vendor": "amd", "family": "amd-gfx1103", "render_node": "/dev/dri/renderD128", "unified": True, "memory_gib": 54.4},
+  {"vendor": "amd", "family": "amd-gfx1100", "render_node": "/dev/dri/renderD129", "unified": False, "memory_gib": 24.0},
+]}
+with patch.object(a, "load_catalog", return_value=detach_cat), patch.object(a, "machine_profile", return_value=detach_prof), \
+     patch.object(a, "load_measurement", return_value={}), patch.object(a, "raise_gpu_memory"), \
+     patch.object(a, "systemctl", return_value=SimpleNamespace(returncode=3)), patch.object(a, "load_model", return_value=None), \
+     patch.object(a.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as run:
+  a.cmd_use(["best", "video", "--detach"])
+  argv = run.call_args.args[0]
+check("use best --detach preserves the resolved GPU and variant context",
+      ["use", "big-vid", "--ctx", "4096", "--gpu", "amd-gfx1103"] == argv[-6:], " ".join(argv))
+a.clear_installing("big-vid")
 
 # Refresh shares one catalog/profile across both caches.
 with patch.object(a, "load_catalog", return_value=cat) as load, patch.object(a, "machine_profile", return_value=profile) as machine, patch.object(a, "known_models", return_value=[]), patch.object(a, "running_models", return_value=set()):

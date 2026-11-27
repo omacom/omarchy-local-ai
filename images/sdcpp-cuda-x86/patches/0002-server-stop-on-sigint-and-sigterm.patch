@@ -1,0 +1,75 @@
+From 39d1b9407cfa74cac0251827ff5bcac7dbdb4676 Mon Sep 17 00:00:00 2001
+From: David Heinemeier Hansson <david@hey.com>
+Date: Wed, 18 Nov 2026 16:01:41 +0100
+Subject: [PATCH] server: stop on SIGINT and SIGTERM
+
+As a container's first process the server ignored both, since the
+kernel gives process 1 no default handling, so `podman stop` and
+`docker stop` waited out their timeout and killed it. The signals are
+now blocked in every thread and taken by one that stops the server, so
+nothing runs in a signal handler and queued work shuts down as before.
+---
+ examples/server/main.cpp | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/examples/server/main.cpp b/examples/server/main.cpp
+index 8bb6fae..56bf556 100644
+--- a/examples/server/main.cpp
++++ b/examples/server/main.cpp
+@@ -1,3 +1,4 @@
++#include <csignal>
+ #include <cstdlib>
+ #include <iostream>
+ #include <mutex>
+@@ -5,6 +6,10 @@
+ #include <thread>
+ #include <vector>
+ 
++#ifndef _WIN32
++#include <pthread.h>
++#endif
++
+ #include "httplib.h"
+ 
+ #include "async_jobs.h"
+@@ -87,6 +92,21 @@ int main(int argc, const char** argv) {
+         std::cout << version_string() << "\n";
+         return EXIT_SUCCESS;
+     }
++#ifndef _WIN32
++    // SIGINT and SIGTERM stop the server. They are blocked in every thread and
++    // taken by one that waits for them, so nothing runs in a signal handler.
++    // As a container's first process the server would otherwise ignore both,
++    // since the kernel gives process 1 no default handling. Blocked before
++    // anything starts a thread: a backend's own threads (CUDA's event
++    // handlers, say) inherit the mask, and one left without it would take
++    // the signal and end the process instead.
++    sigset_t stop_signals;
++    sigemptyset(&stop_signals);
++    sigaddset(&stop_signals, SIGINT);
++    sigaddset(&stop_signals, SIGTERM);
++    pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
++#endif
++
+     SDSvrParams svr_params;
+     SDContextParams ctx_params;
+     // Preserve the CLI default while disabling cwd scans for sd-server.
+@@ -187,6 +207,15 @@ int main(int argc, const char** argv) {
+     register_model_endpoints(svr, runtime);
+ 
+     LOG_INFO("listening on: http://%s:%d\n", svr_params.listen_ip.c_str(), svr_params.listen_port);
++#ifndef _WIN32
++    std::thread stopper([&svr, stop_signals] {
++        int signal = 0;
++        sigwait(&stop_signals, &signal);
++        LOG_INFO("stopping on signal %d", signal);
++        svr.stop();
++    });
++    stopper.detach();
++#endif
+     svr.listen(svr_params.listen_ip, svr_params.listen_port);
+ 
+     {
+-- 
+2.56.1
+

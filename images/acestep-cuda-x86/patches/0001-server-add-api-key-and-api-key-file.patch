@@ -1,0 +1,169 @@
+From d11b49473ceb42835457d51cf3ecfc37e02e2140 Mon Sep 17 00:00:00 2001
+From: David Heinemeier Hansson <david@hey.com>
+Date: Wed, 18 Nov 2026 20:53:22 +0100
+Subject: [PATCH] server: add --api-key and --api-key-file
+
+Without a key the server answers anyone who can reach it. With one, from
+--api-key, --api-key-file or ACE_API_KEY, every request needs
+`Authorization: Bearer <key>`, compared in constant time; others get
+401. Mirrors llama.cpp's server options.
+---
+ README.md            |  3 +++
+ docs/ARCHITECTURE.md |  6 +++++
+ tools/ace-server.cpp | 60 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 69 insertions(+)
+
+diff --git a/README.md b/README.md
+index e0586ab..70f876d 100644
+--- a/README.md
++++ b/README.md
+@@ -104,6 +104,9 @@ Server:
+   --port <N>              Listen port (default: 8080)
+   --max-batch <N>         LM batch limit (default: 1)
+   --max-seq <N>           KV cache size (default: 8192)
++  --api-key <key>         Require this key as a bearer token on every
++                          request (default: none, or ACE_API_KEY)
++  --api-key-file <path>   Read the required key from a file
+ 
+ Debug:
+   --no-fsm                Disable FSM constrained decoding
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index c3f736f..38c1355 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -883,6 +883,9 @@ Server:
+   --port <N>              Listen port (default: 8080)
+   --max-batch <N>         LM batch limit (default: 1)
+   --max-seq <N>           KV cache size (default: 8192)
++  --api-key <key>         Require this key as a bearer token on every
++                          request (default: none, or ACE_API_KEY)
++  --api-key-file <path>   Read the required key from a file
+ 
+ Debug:
+   --no-fsm                Disable FSM constrained decoding
+@@ -1135,6 +1138,9 @@ Memory control:
+ 
+ Debug:
+   --max-seq <N>           KV cache size (default: 8192)
++  --api-key <key>         Require this key as a bearer token on every
++                          request (default: none, or ACE_API_KEY)
++  --api-key-file <path>   Read the required key from a file
+   --no-fsm                Disable FSM constrained decoding
+   --no-fa                 Disable flash attention
+   --dump <dir>            Dump tok_latents + tok_codes (skip LM)
+diff --git a/tools/ace-server.cpp b/tools/ace-server.cpp
+index 0dcaf0b..db35695 100644
+--- a/tools/ace-server.cpp
++++ b/tools/ace-server.cpp
+@@ -62,6 +62,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <deque>
++#include <fstream>
+ #include <functional>
+ #include <memory>
+ #include <mutex>
+@@ -528,6 +529,21 @@ static void json_error(httplib::Response & res, int status, const char * msg) {
+     free(json);
+ }
+ 
++// Whether the request carries `Authorization: Bearer <key>`, compared in time
++// that doesn't depend on where the first difference is.
++static bool authorized(const httplib::Request & req, const std::string & key) {
++    const std::string header = req.get_header_value("Authorization");
++    const std::string prefix = "Bearer ";
++    if (header.size() != prefix.size() + key.size() || header.compare(0, prefix.size(), prefix) != 0) {
++        return false;
++    }
++    unsigned char difference = 0;
++    for (size_t i = 0; i < key.size(); i++) {
++        difference |= (unsigned char) (header[prefix.size() + i] ^ key[i]);
++    }
++    return difference == 0;
++}
++
+ // resolve model name: explicit request > already loaded > first in bucket
+ static std::string resolve_name(const std::vector<ModelEntry> & bucket,
+                                 const std::string &             requested,
+@@ -1619,6 +1635,9 @@ static void usage(const char * prog) {
+             "  --port <N>              Listen port (default: 8080)\n"
+             "  --max-batch <N>         LM batch limit (default: %d)\n"
+             "  --max-seq <N>           KV cache size (default: %d)\n"
++            "  --api-key <key>         Require this key as a bearer token on every\n"
++            "                          request (default: none, or ACE_API_KEY)\n"
++            "  --api-key-file <path>   Read the required key from a file\n"
+             "\n"
+             "Debug:\n"
+             "  --no-fsm                Disable FSM constrained decoding\n"
+@@ -1637,6 +1656,8 @@ int main(int argc, char ** argv) {
+     const char * models_dir   = nullptr;
+     const char * adapters_dir = nullptr;
+     const char * device       = nullptr;
++    std::string  api_key;
++    const char * api_key_file = nullptr;
+ 
+     if (argc < 2) {
+         usage(argv[0]);
+@@ -1670,6 +1691,10 @@ int main(int argc, char ** argv) {
+             port = atoi(argv[++i]);
+         } else if (!strcmp(argv[i], "--max-batch") && i + 1 < argc) {
+             g_max_batch = atoi(argv[++i]);
++        } else if (!strcmp(argv[i], "--api-key") && i + 1 < argc) {
++            api_key = argv[++i];
++        } else if (!strcmp(argv[i], "--api-key-file") && i + 1 < argc) {
++            api_key_file = argv[++i];
+ 
+             // debug
+         } else if (!strcmp(argv[i], "--no-fsm")) {
+@@ -1700,6 +1725,29 @@ int main(int argc, char ** argv) {
+         return 1;
+     }
+ 
++    // the key: --api-key, the first line of --api-key-file, or ACE_API_KEY,
++    // which keeps it out of the process list.
++    if (!api_key.empty() && api_key_file) {
++        fprintf(stderr, "[Server] ERROR: use --api-key or --api-key-file, not both\n");
++        return 1;
++    }
++    if (api_key_file) {
++        std::ifstream file(api_key_file);
++        std::getline(file, api_key);
++        while (!api_key.empty() && strchr(" \t\r\n", api_key.back())) {
++            api_key.pop_back();
++        }
++        if (api_key.empty()) {
++            fprintf(stderr, "[Server] ERROR: no API key could be read from %s\n", api_key_file);
++            return 1;
++        }
++    }
++    if (api_key.empty()) {
++        if (const char * key = getenv("ACE_API_KEY")) {
++            api_key = key;
++        }
++    }
++
+     // stderr capture for SSE /logs (must be after arg parsing so the usage prints directly)
+     LogCapture log_capture;
+ 
+@@ -1773,6 +1821,18 @@ int main(int argc, char ** argv) {
+     httplib::Server svr;
+     g_svr = &svr;
+ 
++    // with a key, every request needs `Authorization: Bearer <key>`.
++    // without one the server answers anyone who can reach it.
++    if (!api_key.empty()) {
++        svr.set_pre_routing_handler([&api_key](const httplib::Request & req, httplib::Response & res) {
++            if (authorized(req, api_key)) {
++                return httplib::Server::HandlerResponse::Unhandled;
++            }
++            json_error(res, 401, "Invalid API key");
++            return httplib::Server::HandlerResponse::Handled;
++        });
++    }
++
+     // per-operation socket idle timeout (httplib default is 5s).
+     // generous margin for slow networks and large audio transfers.
+     svr.set_read_timeout(600);
+-- 
+2.56.1
+

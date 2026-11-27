@@ -1,0 +1,56 @@
+# stable-diffusion.cpp's sd-server, built with CUDA for x86_64 discrete NVIDIA
+# GPUs (Ampere, Ada Lovelace, Blackwell), as omarchy-local-ai runs it. Built from
+# leejet/stable-diffusion.cpp at the same pinned commit and with the same
+# patches as the Vulkan and ARM CUDA images. The driver's libcuda arrives through
+# CDI; the image carries only the CUDA runtime libraries sd-server links, which
+# NVIDIA's CUDA EULA lists as redistributable (Attachment A).
+
+# CUDA 13.4.3, the toolkit matching the 615 driver's CUDA 13.4, on Ubuntu 24.04.
+ARG BUILD_BASE=docker.io/nvidia/cuda@sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9
+ARG BASE=docker.io/library/ubuntu@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
+
+FROM ${BUILD_BASE} AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates
+ARG COMMIT=532d2c15c430a785a712b2d94281f04e733008a4
+RUN git clone https://github.com/leejet/stable-diffusion.cpp /src \
+ && git -C /src checkout --quiet "$COMMIT" \
+ && git -C /src submodule update --quiet --init --recursive
+COPY patches/ /patches/
+# Compute capabilities 8.6 (Ampere), 8.9 (Ada Lovelace), 12.0 (Blackwell) and 12.0 PTX for forward compatibility.
+# The CPU side stays generic x86-64 so the build does not depend on the builder CPU.
+ARG CUDA_ARCHITECTURES="86;89;120;120-virtual"
+RUN git -C /src apply /patches/*.patch \
+ && cmake -S /src -B /build -DSD_CUDA=ON -DGGML_NATIVE=OFF -DGGML_CUDA_NCCL=OFF \
+      -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES" -DCMAKE_BUILD_TYPE=Release \
+ && cmake --build /build --target sd-server -j"$(nproc)"
+# The CUDA libraries sd-server needs at run time, by what it links, with
+# cuBLASLt, which cuBLAS loads. Their packages' copyright files hold the EULA.
+RUN mkdir -p /cuda /licenses/nvidia \
+ && ldd /build/bin/sd-server | awk '/\/usr\/local\/cuda/ { print $3 }' \
+    | while read -r lib; do cp -L "$lib" /cuda/; done \
+ && cp -L /usr/local/cuda/lib64/libcublasLt.so.13 /cuda/ \
+ && for package in cuda-cudart-13-4 libcublas-13-4; do \
+      install -Dm644 "/usr/share/doc/$package/copyright" "/licenses/nvidia/$package"; \
+    done \
+ && ls -la /cuda
+# The licenses of stable-diffusion.cpp, ggml and the third-party code built in.
+RUN cd /src \
+ && find . -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -print \
+    | while read -r file; do install -Dm644 "$file" "/licenses/${file#./}"; done
+
+FROM ${BASE}
+# OpenMP for ggml's CPU side; curl for the health probe.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /cuda/ /usr/local/lib/
+RUN ldconfig
+COPY --from=build /build/bin/sd-server /usr/bin/sd-server
+COPY --from=build /licenses /usr/share/licenses/stable-diffusion.cpp
+COPY patches/ /usr/share/doc/stable-diffusion.cpp/patches/
+LABEL org.opencontainers.image.source="https://github.com/omacom/omarchy-local-ai"
+LABEL org.opencontainers.image.description="stable-diffusion.cpp's sd-server, built with CUDA for x86_64 discrete NVIDIA GPUs in omarchy-local-ai"
+LABEL org.opencontainers.image.licenses="MIT"
+EXPOSE 1234
+CMD ["sd-server", "--listen-ip", "0.0.0.0", "--listen-port", "1234"]

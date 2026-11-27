@@ -92,6 +92,7 @@ if ! log=$(limine-mkinitcpio 2>&1) || grep -q 'mkinitcpio failed for kernel' <<<
 fi
 """
 RAM_CLASSES = (32, 64, 96, 128, 192, 256, 512)
+VRAM_CLASSES = (8, 10, 12, 16, 24, 32, 48, 80, 96)
 STANDARD_INPUTS = ("model", "draft", "text_encoder", "vae", "audio_vae", "lora", "ctx", "alias", "key", "temperature", "top_p", "top_k")
 # The files a recipe's artifacts can name, each reaching the server through the runtime input of
 # the same name: the model, and a draft for speculative decoding (text) or the text encoder and
@@ -357,6 +358,102 @@ def intel_gpus(ram_gib, drm_root="/sys/class/drm"):
   return gpus
 
 
+def vram_class(vram_gib):
+  for size in VRAM_CLASSES:
+    if vram_gib <= size + 0.5:
+      return size
+  return VRAM_CLASSES[-1]
+
+
+def nvidia_family(name):
+  tokens = [tok for tok in re.sub(r"[^a-z0-9]+", " ", name.lower()).split()
+            if tok not in ("nvidia", "geforce", "gpu", "max", "q")]
+  merged = []
+  i = 0
+  while i < len(tokens):
+    if i + 1 < len(tokens) and tokens[i] in ("rtx", "gtx", "a", "l", "h", "b", "t") and tokens[i + 1][0].isdigit():
+      merged.append(tokens[i] + tokens[i + 1])
+      i += 2
+    else:
+      merged.append(tokens[i])
+      i += 1
+  return f"nvidia-{'-'.join(merged) or 'gpu'}"
+
+
+def _nvidia_smi(query, device=None):
+  argv = ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"]
+  if device is not None:
+    argv += ["-i", str(device)]
+  try:
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+  except (OSError, subprocess.SubprocessError):
+    return []
+  if result.returncode != 0:
+    return []
+  return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def nvidia_gpus():
+  gpus = []
+  for line in _nvidia_smi("index,name,memory.total,compute_cap,uuid"):
+    parts = [part.strip() for part in line.split(",")]
+    if len(parts) < 5:
+      continue
+    index, name, total_mib, compute_cap, uuid = parts[:5]
+    try:
+      vram_gib = round(float(total_mib) / 1024, 2)
+    except ValueError:
+      continue
+    if vram_gib <= 0:
+      continue
+    gpus.append({
+      "vendor": "nvidia",
+      "family": nvidia_family(name),
+      "render_node": "",
+      "vram_gib": vram_gib,
+      "gtt_gib": 0,
+      "unified": False,
+      "memory_gib": vram_gib,
+      "max_memory_gib": vram_gib,
+      "vram_class": vram_class(vram_gib),
+      "compute_cap": compute_cap,
+      "nvidia_index": index,
+      "nvidia_uuid": uuid,
+      "sysfs": "",
+    })
+  return gpus
+
+
+def gpu_rank(gpu):
+  """Ordering key for GPU selection: pairs outrank single nodes, discrete GPUs outrank
+  integrated ones (whose GTT share of system RAM can exceed a card's VRAM), and larger
+  memory wins ties."""
+  return (gpu.get("nodes", 1), 0 if gpu.get("unified") else 1, gpu["memory_gib"])
+
+
+def gpu_memory_class(profile, gpu):
+  if not gpu.get("unified") and gpu.get("vram_class") is not None:
+    return ("vram_class", gpu["vram_class"])
+  return ("ram_class", profile["ram_class"])
+
+
+def entry_memory_class(entry):
+  if not isinstance(entry, dict):
+    return None
+  has_ram = "ram_class" in entry
+  has_vram = "vram_class" in entry
+  if has_ram == has_vram:
+    return None
+  if has_ram:
+    return ("ram_class", entry["ram_class"]) if entry["ram_class"] in RAM_CLASSES else None
+  return ("vram_class", entry["vram_class"]) if entry["vram_class"] in VRAM_CLASSES else None
+
+
+def gpu_memory_label(profile, gpu):
+  kind, size = gpu_memory_class(profile, gpu)
+  return f"{size} GB VRAM" if kind == "vram_class" else f"{size} GB"
+
+
 def gpu_memory_ceiling_gib(gpu, ram_gib):
   """The most memory this GPU can be given to address: a unified AMD GPU's cap can rise to all of
   RAM but the desktop's reserve, an Intel one's to the three quarters Mesa lets it address (xe sizes
@@ -442,6 +539,8 @@ def machine_profile():
     gpus.append(gpu)
   if platform in NVIDIA_UNIFIED_FAMILIES:
     gpus.append({"vendor": "nvidia", "family": NVIDIA_UNIFIED_FAMILIES[platform], "render_node": "", "vram_gib": 0, "gtt_gib": 0, "unified": True, "memory_gib": round(ram, 2), "sysfs": ""})
+  else:
+    gpus.extend(nvidia_gpus())
   profile = {"platform": platform, "ram_gib": round(ram, 2), "ram_class": ram_class(ram), "gpus": gpus}
   pair = cached_pair(profile)
   if pair:
@@ -450,13 +549,6 @@ def machine_profile():
     gpus.append(dict(local, family=PAIR_FAMILIES[local["family"]], nodes=2, memory_gib=round(min(ram, pair["ram_gib"]), 2), peer=pair["peer"]))
     profile["pair"] = pair
   return profile
-
-
-def gpu_rank(gpu):
-  """Ordering key for GPU selection: pairs outrank single nodes, discrete GPUs outrank
-  integrated ones (whose GTT share of system RAM can exceed a card's VRAM), and larger
-  memory wins ties."""
-  return (gpu.get("nodes", 1), 0 if gpu.get("unified") else 1, gpu["memory_gib"])
 
 
 def choose_gpu(profile, family=None):
@@ -998,6 +1090,8 @@ def validate_recipe(rid, recipe, runtimes, root=None):
       continue
     if "ram_class" in entry:
       errors.append(f"{where}.hardware[{index}].ram_class: measurements are per chip, not per RAM class")
+    if "vram_class" in entry:
+      errors.append(f"{where}.hardware[{index}].vram_class: measurements are per chip, not per VRAM class")
     if not _safe_string(entry.get("gpu"), f"{where}.hardware[{index}].gpu", errors):
       continue
     if "platform" in entry and not _safe_string(entry.get("platform"), f"{where}.hardware[{index}].platform", errors):
@@ -1141,13 +1235,14 @@ def validate_best(best, recipes):
     if not isinstance(entry, dict):
       errors.append(f"{where}: must be a table")
       continue
-    if entry.get("ram_class") not in RAM_CLASSES:
-      errors.append(f"{where}.ram_class: must be one of {RAM_CLASSES}")
+    mem_class = entry_memory_class(entry)
+    if mem_class is None:
+      errors.append(f"{where}: needs exactly one of ram_class ({RAM_CLASSES}) or vram_class ({VRAM_CLASSES})")
     if not _safe_string(entry.get("gpu"), f"{where}.gpu", errors):
       continue
     if "platform" in entry:
-      errors.append(f"{where}.platform: not a class selector; use gpu and ram_class")
-    selectors = (gpu_class(entry.get("gpu")), entry.get("ram_class"))
+      errors.append(f"{where}.platform: not a class selector; use gpu and ram_class or vram_class")
+    selectors = (gpu_class(entry.get("gpu")), mem_class)
     if selectors in seen:
       errors.append(f"{where}: same selectors as class[{seen[selectors]}]")
     seen[selectors] = index
@@ -1297,13 +1392,20 @@ def compatibility(catalog, rid, profile, gpu, ctx=None):
 
 
 def match_class(best, profile, gpu, field="recipes"):
-  """The class this machine takes its `field` list from: its own GPU class at its RAM class, or,
-  where that lists none, the nearest smaller RAM class of the same GPU that does. A bigger machine
-  recommends what a smaller one does until best.toml says otherwise, so a recommendation needs
-  measuring only on the smallest machine that makes it."""
-  same = [entry for entry in best["class"]
-          if gpu_class(entry["gpu"]) == gpu_class(gpu["family"]) and entry["ram_class"] <= profile["ram_class"] and entry.get(field)]
-  return max(same, key=lambda entry: entry["ram_class"], default=None)
+  """The class this machine takes its `field` list from: its own GPU class at its memory class
+  (ram_class for unified GPUs, vram_class for discrete NVIDIA GPUs), or, where that lists none,
+  the nearest smaller memory class of the same GPU that does. A bigger machine recommends what
+  a smaller one does until best.toml says otherwise, so a recommendation needs measuring only
+  on the smallest machine that makes it."""
+  want_kind, want_size = gpu_memory_class(profile, gpu)
+  same = []
+  for entry in best["class"]:
+    if gpu_class(entry["gpu"]) != gpu_class(gpu["family"]) or not entry.get(field):
+      continue
+    mem = entry_memory_class(entry)
+    if mem and mem[0] == want_kind and mem[1] <= want_size:
+      same.append((mem[1], entry))
+  return max(same, key=lambda pair: pair[0], default=(0, None))[1]
 
 
 def resolve_best(catalog, profile, gpu=None, ctx=None, field="recipes"):
@@ -1330,11 +1432,11 @@ def _resolve_class(catalog, profile, gpu, ctx=None, field="recipes"):
   entry = match_class(catalog.best, profile, gpu, field)
   if entry is None and match_class(catalog.best, profile, gpu) is not None:
     kind = next((name for name, listed in BEST_FIELDS.items() if listed == field), field)
-    raise LocalError(f"No {kind} model is recommended for this machine yet ({gpu['family']}, {profile['ram_class']} GB)")
+    raise LocalError(f"No {kind} model is recommended for this machine yet ({gpu['family']}, {gpu_memory_label(profile, gpu)})")
   if entry is None:
     near = [rid for rid, recipe in catalog.recipes.items() if any(gpu_class(hw.get("gpu")) == gpu_class(gpu["family"]) for hw in recipe.get("hardware", []))]
     raise LocalError(
-      f"No recommendation for this machine yet ({gpu['family']}, {profile['ram_class']} GB, {profile['platform']}).\n"
+      f"No recommendation for this machine yet ({gpu['family']}, {gpu_memory_label(profile, gpu)}, {profile['platform']}).\n"
       + (f"Recipes measured on the same GPU family: {', '.join(near)}" if near else "No recipes are measured on this GPU family yet.")
     )
   skipped = []
@@ -1924,7 +2026,8 @@ def device_lines(runtime, gpu):
     elif device == "kfd":
       lines.append("AddDevice=/dev/kfd")
     elif device == "cdi-nvidia":
-      lines.append("AddDevice=nvidia.com/gpu=all")
+      target = gpu.get("nvidia_uuid") or gpu.get("nvidia_index") or "all"
+      lines.append(f"AddDevice=nvidia.com/gpu={target}")
     elif device == "infiniband":
       lines.append("AddDevice=/dev/infiniband")
   return lines
@@ -2580,6 +2683,11 @@ def free_memory(gpu):
     gpu_free = gpu["memory_gib"] - gib(used)
   elif gpu["vendor"] == "intel":
     gpu_free = gpu["memory_gib"] - gib(mem.get("GPUActive", 0))
+  elif gpu["vendor"] == "nvidia" and not gpu.get("unified"):
+    lines = _nvidia_smi("memory.free", gpu.get("nvidia_uuid") or gpu.get("nvidia_index"))
+    if lines:
+      with contextlib.suppress(ValueError):
+        gpu_free = round(float(lines[0]) / 1024, 2)
   return available, gpu_free
 
 
@@ -3683,7 +3791,7 @@ def cmd_use(argv):
     rid, variant, skipped, gpu = resolve_best(catalog, profile, gpu, best_ctx, field=BEST_FIELDS[args.kind])
     for skipped_id, reason in skipped:
       say(f"Skipping {skipped_id}: {reason}")
-    say(f"Best {args.kind} model for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")
+    say(f"Best {args.kind} model for this machine ({gpu['family']}, {gpu_memory_label(profile, gpu)}): {rid}")
   else:
     rid = args.target
     recipe = _lookup_recipe(catalog, rid)
@@ -3699,7 +3807,7 @@ def cmd_use(argv):
   # Before a detached setup leaves this process, so polkit can still ask in the user's session.
   raise_gpu_memory(variant, gpu, args.detach)
   if args.detach:
-    return detach_use(rid, args, catalog.recipes[rid], measured_load)
+    return detach_use(rid, args, catalog.recipes[rid], measured_load, gpu=gpu, variant=variant)
   # A first setup shows in the panel from now on: waiting for the lock, then
   # downloading, then loading once activate() writes its pending row.
   fresh = load_model(rid) is None
@@ -3735,7 +3843,7 @@ def cmd_use(argv):
     raise
 
 
-def detach_use(rid, args, recipe, measured_load=None):
+def detach_use(rid, args, recipe, measured_load=None, gpu=None, variant=None):
   """Run the setup as a transient user unit, so it outlives the panel or
   terminal that asked for it; its output goes to the journal."""
   unit = install_unit(rid)
@@ -3757,10 +3865,12 @@ def detach_use(rid, args, recipe, measured_load=None):
     if env.get(name):
       command.append(f"--setenv={name}")
   command += [entry, "use", rid]
-  if args.ctx:
-    command += ["--ctx", str(args.ctx)]
-  if args.gpu:
-    command += ["--gpu", args.gpu]
+  ctx = args.ctx or (variant.get("ctx") if variant else None)
+  if ctx:
+    command += ["--ctx", str(ctx)]
+  gpu_family = args.gpu or (gpu.get("family") if gpu and gpu.get("family") != "cpu" else None)
+  if gpu_family:
+    command += ["--gpu", gpu_family]
   if args.seed:
     command += ["--seed", os.path.abspath(args.seed)]
   result = subprocess.run(command, capture_output=True, text=True, env=env)
@@ -3899,8 +4009,11 @@ def cmd_list(argv):
   except LocalError:
     primary = profile["gpus"][0] if profile["gpus"] else None
   gpu = primary["family"] if primary else "no GPU"
+  mem_desc = (f"{primary['vram_class']} GB VRAM, {profile['ram_class']} GB RAM"
+              if primary and not primary.get("unified") and primary.get("vram_class") is not None
+              else f"{profile['ram_class']} GB")
   paired = f" · linked to {profile['pair']['host']}" if profile.get("pair") else ""
-  say(f"This machine: {gpu}, {profile['ram_class']} GB, {profile['platform']}{paired}")
+  say(f"This machine: {gpu}, {mem_desc}, {profile['platform']}{paired}")
   for row in rows:
     marks = [mark for mark, on in (("best", row["best"]), ("experimental", row["experimental"]), ("retired", row["retired"]), ("running", row["active"]), ("installed", row["installed"])) if on]
     tier = f" · third-party ({row['publisher']})" if row["tier"] == "third-party" else ""
@@ -4282,11 +4395,34 @@ def write_status(catalog, profile, transitions=None, pending=None, publish=True)
     return record
 
 
+def _nvidia_compute_vram_bytes(pids):
+  if not pids:
+    return 0
+  wanted = set(pids)
+  try:
+    result = subprocess.run(
+      ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
+      capture_output=True, text=True, timeout=10,
+    )
+  except (OSError, subprocess.SubprocessError):
+    return 0
+  if result.returncode != 0:
+    return 0
+  total = 0
+  for line in result.stdout.splitlines():
+    parts = [part.strip() for part in line.split(",")]
+    if len(parts) < 2 or parts[0] not in wanted:
+      continue
+    with contextlib.suppress(ValueError):
+      total += int(float(parts[1]) * 2**20)
+  return total
+
+
 def held_bytes(cgroup, cgroup_root="/sys/fs/cgroup", proc="/proc"):
   """What the processes of one cgroup hold now that the machine can't take back: their anonymous
-  memory, and the GPU memory mapped from system RAM (GTT) that the driver charges to no cgroup,
+  memory, the GPU memory mapped from system RAM (GTT) that the driver charges to no cgroup,
   counted once per GPU client however many descriptors, or processes forked after opening the
-  GPU, share it. The file cache they read
+  GPU, share it, and any discrete NVIDIA VRAM held by those processes. The file cache they read
   weights through isn't held: the kernel counts it as available, and frees it under pressure."""
   base = os.path.join(cgroup_root, cgroup.lstrip("/"))
   held = 0
@@ -4313,7 +4449,7 @@ def held_bytes(cgroup, cgroup_root="/sys/fs/cgroup", proc="/proc"):
       gtt = fields.get("drm-memory-gtt", "").split()
       if client and gtt and gtt[0].isdigit():
         clients[(fields.get("drm-pdev", ""), client)] = int(gtt[0]) * (1024 if gtt[1:] == ["KiB"] else 2**20 if gtt[1:] == ["MiB"] else 1)
-  return held + sum(clients.values())
+  return held + sum(clients.values()) + _nvidia_compute_vram_bytes(pids)
 
 
 def cmd_memory(argv):

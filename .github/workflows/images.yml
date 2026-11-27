@@ -52,12 +52,14 @@ jobs:
           declare -A runner=(
             [llamacpp]=ubuntu-latest [llamacpp-inkling2]=ubuntu-latest [gufo]=ubuntu-latest [sdcpp]=ubuntu-latest [acestep]=ubuntu-latest [stable-audio-3-vulkan]=ubuntu-latest
             [stable-audio-3]="ubuntu-latest ubuntu-24.04-arm"
+            [sdcpp-cuda-x86]=ubuntu-latest [acestep-cuda-x86]=ubuntu-latest
             [sdcpp-cuda]=ubuntu-24.04-arm [acestep-cuda]=ubuntu-24.04-arm [stable-audio-3-cuda]=ubuntu-24.04-arm [tensorfold]=ubuntu-24.04-arm
             [tensorfold-dsv41]=ubuntu-24.04-arm [tensorfold-glm53]=ubuntu-24.04-arm [tensorfold-nemotron-bolt]=ubuntu-24.04-arm [llamacpp-hy4]=ubuntu-24.04-arm [inkling2-exl3]=ubuntu-24.04-arm [tensorfold-inkling2]=ubuntu-24.04-arm
           )
           declare -A check=(
             [llamacpp]="llama-server --version" [llamacpp-inkling2]="llama-server --version" [gufo]="gufo --version && command -v serve caddy" [sdcpp]="command -v sd-server" [acestep]="command -v ace-server" [stable-audio-3-vulkan]="command -v sa3-server && sa3-server --help >/dev/null 2>&1"
             [stable-audio-3]="command -v sa3-server && sa3-server --help >/dev/null && python3 -c 'import ai_edge_litert, numpy, sentencepiece' && command -v ffmpeg"
+            [sdcpp-cuda-x86]="command -v sd-server && ! ldd /usr/bin/sd-server | grep 'not found' | grep -qv 'libcuda\.so\.1'" [acestep-cuda-x86]="command -v ace-server && ! ldd /usr/bin/ace-server | grep 'not found' | grep -qv 'libcuda\.so\.1'"
             [sdcpp-cuda]="command -v sd-server" [acestep-cuda]="command -v ace-server" [stable-audio-3-cuda]="command -v sa3-server" [tensorfold]="command -v tensorfold-native"
             [tensorfold-dsv41]="command -v tensorfold-native" [tensorfold-glm53]="command -v tensorfold-native"
             [tensorfold-nemotron-bolt]="command -v tensorfold-native" [tensorfold-inkling2]="command -v tensorfold-native" [llamacpp-hy4]="command -v llama-server" [inkling2-exl3]="command -v serve && python3 -c 'import exllamav3, fastapi, transformers'"
