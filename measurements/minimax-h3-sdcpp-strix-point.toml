@@ -1,0 +1,40 @@
+recipe = "minimax-h3-sdcpp"
+measured_at = "2026-11-27"
+image = "ghcr.io/omacom/omarchy-local-ai/sdcpp@sha256:ce64fc9ea6144680161dd5c6355c2bfb3e33822d829b50b7338ba86cad4063b4"
+load_seconds = 4.0
+fileset = "74f340a66930dc5c"
+method = "one 864x480, 56-frame (2.3 s at 24 fps) clip with sound through /sdcpp/v1/vid_gen on the engine-run server, at its default 4 steps with the turbo LoRA it lists, --flash-attn on and --vae-tiling on; GPU memory from GTT + VRAM counters, every half second"
+
+[machine]
+platform = "x86"
+gpu = "amd-strix-point"
+ram_class = 32
+system = "TUXEDO TUXEDO InfinityBook Pro AMD Gen10"
+kernel = "7.3.6-1-omarchy"
+cpu = "AMD Ryzen AI 9 HX 370 w/ Radeon 890M"
+
+[memory]
+observed_at_load_gib = 0.0
+min_available_during_bench_gib = 2.1
+total_gib = 30.5
+peak_gpu_gib = 22.4
+
+[generation]
+width = 864
+height = 480
+steps = 4
+images = 1
+first_image_s = 384.9
+seconds_per_image = 384.9
+
+[[artifacts]]
+repo = "leejet/MiniMax-H3-GGUF"
+revision = "eee1dd2f05b755b28bd1b785925cbfeebfcba9d9"
+
+[[artifacts]]
+repo = "PrunaAI/P-H3-Image-Comfy"
+revision = "44a0fb73f299da1bb715bdb5ff59ce3fd3c6f543"
+
+[[artifacts]]
+repo = "Comfy-Org/MiniMax-H3"
+revision = "4b53a35191437de05370da548e59aeabe2a5a09a"

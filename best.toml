@@ -74,10 +74,16 @@ music = ["ace-step-1.5-turbo-acestep"]
 
 # On Strix Point (Ryzen AI 9 HX 370 / Radeon 890M), Inkling 2 Mini's GSQ-RCO IQ3_S build runs
 # via Vulkan RADV in ~18 GiB at load (131K context on 32 GB, 256K on 64 GB), alongside image and
-# music generation via Vulkan.
+# music generation via Vulkan. 64 GB adds MiniMax H3 video generation (inheriting text, images
+# and music from 32 GB).
 [[class]]
 gpu = "amd-strix-point"
 ram_class = 32
 recipes = ["inkling-2-mini-llamacpp"]
 images = ["flux2-klein-4b-sdcpp", "z-image-turbo-sdcpp"]
 music = ["ace-step-1.5-turbo-acestep"]
+
+[[class]]
+gpu = "amd-strix-point"
+ram_class = 64
+videos = ["minimax-h3-sdcpp"]
