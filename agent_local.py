@@ -5583,19 +5583,19 @@ def clean_listing(listing, dns):
   return {"ram_total_gib": _number(listing.get("ram_total_gib")), "models": models}
 
 
-def fetch_listing(dns, key=None):
+def fetch_listing(dns, key=None, gateway=False):
   """(state, listing, error): online with its models, not_sharing, or unreachable.
   A peer's answer is untrusted: whatever it makes fetching, parsing or cleaning raise (a
   malformed response, nesting deep enough to recurse out) leaves that one peer
   unreachable, never the whole survey. A gateway's listing is asked for with
-  its key (listing_key): it lists what that key may use."""
+  its key (listing_key), if it has one: it lists what that key may use."""
   try:
     status, body = http_status(f"https://{dns}{LISTING_ROUTE}", key=key, timeout=LISTING_TIMEOUT)
     # Tailscale stops listening on 443 once a host's last serve route goes, so
     # an online host refusing the connection simply shares nothing. A gateway
-    # (asked with its key) serves its listing on its own: refusing it is it
-    # being down, which keeps its models' lines.
-    if not key and (status == 404 or (status == 0 and b"Connection refused" in body)):
+    # serves its listing on its own: refusing it is it being down, which
+    # keeps its models' lines.
+    if not gateway and (status == 404 or (status == 0 and b"Connection refused" in body)):
       return "not_sharing", None, ""
     if status != 200:
       return "unreachable", None, f"HTTP {status}" if status else body.decode(errors="replace")[:200]
@@ -5653,7 +5653,7 @@ def survey_network(previous, now=None):
       peers.setdefault(host, (before["dns"], False))
   online = {host: dns for host, (dns, up) in peers.items() if up}
   with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-    answers = dict(zip(online, pool.map(lambda host: fetch_listing(online[host], listing_key(remotes.get(host))), online)))
+    answers = dict(zip(online, pool.map(lambda host: fetch_listing(online[host], listing_key(remotes.get(host)), gateway=bool((remotes.get(host) or {}).get("gateway"))), online)))
   for host, (dns, up) in sorted(peers.items()):
     paired = host in remotes
     before = previous.get("hosts", {}).get(host) or {}
@@ -5724,7 +5724,7 @@ def resolve_remote(mid, running_only=True):
   remote = load_remotes().get(host)
   if not connected(remote, rid):
     raise LocalError(f"{host}/{rid} isn't paired. Run: omarchy models pair {host} {rid}")
-  state, listing, error = fetch_listing(remote["dns"], listing_key(remote))
+  state, listing, error = fetch_listing(remote["dns"], listing_key(remote), gateway=bool(remote.get("gateway")))
   if state != "online":
     raise LocalError(f"{host} doesn't share models right now" if state == "not_sharing" else f"{host} isn't reachable{': ' + error if error else ''}")
   for model in listing["models"]:
@@ -5870,10 +5870,10 @@ def pair_gateway(url, rid=None):
     key = ""
   if key and not GATEWAY_KEY_RE.fullmatch(key):
     raise LocalError("Not a key: 16 to 4096 letters, digits or -._~+/, no spaces")
-  state, listing, error = fetch_listing(dns, key or None)
+  state, listing, error = fetch_listing(dns, key or None, gateway=True)
   if state != "online":
     if error in ("HTTP 401", "HTTP 403") and not key:
-      raise LocalError(f"{host} needs a key\nAsk for one from whoever runs {dns}, then: omarchy models pair {host}")
+      raise LocalError(f"{host} needs a key\nAsk for one from whoever runs {dns}, then: omarchy models pair https://{dns}")
     if error in ("HTTP 401", "HTTP 403"):
       raise LocalError(f"{host} refused the key\nAsk for another key from whoever runs {dns}")
     raise LocalError(f"Can't reach {host}{': ' + error if error else ''}")
