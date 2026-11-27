@@ -597,6 +597,9 @@ same_rt["pair"].update(state="/state", env={"NCCL_COMM_ID": "@MASTER_ADDR@:@MAST
 check("a paired runtime may run the head's command on both ranks, with its own NCCL settings", not a.validate_runtime("same", same_rt), "\n".join(a.validate_runtime("same", same_rt)))
 same_text = a.render_container("paired", paired, same_rt, paired["variant"][0], {"model": "model"}, pair_gpu, "b" * 16)
 check("a state path mounts the rank folder writable", f"models/paired/{'b' * 16}.rank0:/state\n" in same_text)
+with patch.object(a, "data_dir", return_value=str(Path(os.environ["HOME"]) / ".local/state/omarchy/agent-local/data")):
+  fallback_text = a.render_container("paired", paired, same_rt, paired["variant"][0], {"model": "model"}, pair_gpu, "b" * 16)
+check("the pair unit mounts rank 0 from the fallback data root", f"Volume=%h/.local/state/omarchy/agent-local/data/models/paired/{'b' * 16}.rank0:/state" in fallback_text)
 _, same_argv, _, _ = a.head_argv(same_rt, paired, paired["variant"][0], {"model": "model"}, "paired")
 check("rank 1's default command is the head's, bound to loopback", same_argv[-4:] == ["--host", "127.0.0.1", "--port", str(a.port_for("paired"))] and same_argv[:2] == ["server", "serve"])
 # Each rank gets its own link settings, and rank 1 the head's command inside the same restrictions.
@@ -605,7 +608,8 @@ setup = {"schema": 1, "recipe_id": "paired", "runtime": same_rt, "recipe": paire
 a.write_pair_setup(setup)
 here = {"addr": "10.99.1.1", "dev": "enp1", "hcas": ["rocep1", "roceP2"], "gid": "5"}
 there = {"addr": "10.99.1.2", "dev": "enp1", "hcas": ["rocep1", "roceP2"], "gid": "3"}
-with patch.object(a, "pair_link", return_value=(here, there)), patch.object(a, "peer_headroom") as headroom, patch.object(a, "pair_ssh") as ssh, patch.object(a, "pair_limits") as limits, patch.object(a, "pair_python"):
+with patch.object(a, "pair_link", return_value=(here, there)), patch.object(a, "peer_headroom") as headroom, patch.object(a, "pair_ssh") as ssh, patch.object(a, "pair_limits") as limits, patch.object(a, "pair_python"), \
+     patch.object(a, "peer_data_dir", return_value="/home/bob/.local/state/omarchy/agent-local/data"):
   a.pair_worker_start("paired")
 head_env = dict(line.split("=", 1) for line in Path(a.pair_env_path("paired")).read_text().splitlines())
 worker = shlex.split(ssh.call_args.args[1])
@@ -616,8 +620,8 @@ check("rank 1 starts on the peer as its user, with the head's command and the sa
       ssh.call_args.args[0] == "bob@10.99.1.2" and headroom.called
       and limits.called and all(flag in worker for flag in ("--read-only", "no-new-privileges", "/dev/infiniband", "f" * 64))
       and worker[worker.index("--cap-drop") + 1] == "all"
-      and f"/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}:/models:ro" in worker
-      and f"/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}.rank1:/state" in worker
+      and f"/home/bob/.local/state/omarchy/agent-local/data/models/paired/{'e' * 16}:/models:ro" in worker
+      and f"/home/bob/.local/state/omarchy/agent-local/data/models/paired/{'e' * 16}.rank1:/state" in worker
       and worker[worker.index("f" * 64) + 1:][:2] == ["server", "serve"] and worker[-4:] == ["--host", "127.0.0.1", "--port", str(a.port_for("paired"))], repr(worker))
 os.unlink(a.pair_setup_path("paired"))
 # Setup copies the image (only when the peer lacks it) and the file set, and makes both ranks' state folders.
@@ -626,13 +630,17 @@ def fake_run(argv, **kwargs):
   ran.append(argv)
   return SimpleNamespace(returncode=0, stdout="f" * 64 + "\n", stderr="")
 manifest = {"fileset": "e" * 16}
+local_data = str(Path(os.environ["HOME"]) / ".local/state/omarchy/agent-local/data")
+peer_data = "/home/bob/.local/state/omarchy/agent-local/data"
 with patch.object(a.subprocess, "run", side_effect=fake_run), patch.object(a.subprocess, "Popen") as save, \
-     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as ssh, patch.object(a, "load_installing", return_value=None):
+     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as ssh, patch.object(a, "load_installing", return_value=None), \
+     patch.object(a, "data_dir", return_value=local_data), patch.object(a, "peer_data_dir", return_value=peer_data):
   a.pair_setup("paired", manifest, same_rt, {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob"})
 rsync = next(argv for argv in ran if argv[0] == "rsync")
 check("setup records the peer and the image by ID", manifest["pair"] == {"peer": "bob@10.99.1.2", "host": "spark2", "home": "/home/bob", "image_id": "f" * 64})
-check("setup copies the file set to the peer, not an image it already has", not save.called and rsync[-1] == f"bob@10.99.1.2:/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}/")
-check("setup makes both ranks' state folders", Path(a.rank_dir("paired", "e" * 16, 0)).is_dir() and any(f"{'e' * 16}.rank1" in call.args[1] for call in ssh.call_args_list))
+check("setup copies the file set to the peer's data root, not an image it already has", not save.called and rsync[-1] == f"bob@10.99.1.2:{peer_data}/models/paired/{'e' * 16}/")
+check("setup makes both ranks' state folders under the data roots", Path(local_data, "models", "paired", f"{'e' * 16}.rank0").is_dir()
+      and any(f"{peer_data}/models/paired/{'e' * 16}.rank1" in call.args[1] for call in ssh.call_args_list))
 # Prepared files are a generation per image and prepare command, so an update never rewrites the running setup's.
 updated = dict(pair_rt, image=pair_rt["image"].replace("a" * 64, "b" * 64))
 check("a runtime update prepares into its own generation", a.rank_folder("e" * 16, 0, pair_rt) != a.rank_folder("e" * 16, 0, updated) and a.rank_folder("e" * 16, 0, same_rt) == "e" * 16 + ".rank0")
@@ -649,14 +657,16 @@ def fake_prepare(argv, **kwargs):
   ran.append(argv)
   return SimpleNamespace(returncode=0, stdout="f" * 64 + "\n", stderr="")
 with patch.object(a.subprocess, "run", side_effect=fake_prepare), patch.object(a.subprocess, "Popen"), \
-     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")), patch.object(a, "load_installing", return_value=None):
+     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")), patch.object(a, "load_installing", return_value=None), \
+     patch.object(a, "peer_data_dir", return_value=peer_data):
   a.pair_setup("paired", {"fileset": "e" * 16}, pair_rt, {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob"})
 prepares = [argv for argv in ran if any(word == "prep" or " prep " in word for word in argv)]
 check("prepare runs for rank 0 here and rank 1 on the peer, without network",
       len(prepares) == 2 and prepares[0][-3:] == ["prep", "0", "2"] and "none" in prepares[0]
       and "prep 1 2" in " ".join(prepares[1]) and "--network none" in " ".join(prepares[1]), repr(prepares))
 with patch.object(a.subprocess, "run", side_effect=lambda argv, **k: SimpleNamespace(returncode=1 if "prep" in argv else 0, stdout="f" * 64, stderr="")), \
-     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")), patch.object(a, "load_installing", return_value=None):
+     patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")), patch.object(a, "load_installing", return_value=None), \
+     patch.object(a, "peer_data_dir", return_value=peer_data):
   raises("a failed prepare stops the setup", lambda: a.pair_setup("paired", {"fileset": "e" * 16}, pair_rt, {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob"}), "Preparing rank 0")
 # Disk for the prepared files is checked on both Sparks before anything is written, and
 # prepare containers carry names remove can stop.
@@ -669,14 +679,16 @@ served.mkdir(parents=True, exist_ok=True)
 ran.clear()
 with patch.object(a.subprocess, "run", side_effect=fake_prepare), patch.object(a, "load_installing", return_value=None), \
      patch.object(a.shutil, "disk_usage", return_value=SimpleNamespace(free=500 * 2**30)), \
+     patch.object(a, "peer_data_dir", return_value=peer_data), \
      patch.object(a, "pair_ssh", return_value=SimpleNamespace(returncode=0, stdout="%d\n0\n" % (50 * 2**30), stderr="")) as disk:
   raises("a peer without room for the files and prepared inputs stops setup first", lambda: a.pair_setup("paired", {"fileset": "e" * 16, "files": [{"size": 10 * 2**30}]}, big, {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob"}), "spark2 has 50 GiB free")
 measured = disk.call_args_list[0].args[1].split("du -sbc ", 1)[1].split(" 2>")[0]
 check("the peer credits only the file set and the current generation as already there",
-      shlex.split(measured) == [f"/home/bob/.local/share/omarchy/agent-local/models/paired/{'e' * 16}", a.rank_dir("paired", "e" * 16, 1, "/home/bob", big)], measured)
+      shlex.split(measured) == [f"{peer_data}/models/paired/{'e' * 16}", a.rank_dir("paired", "e" * 16, 1, peer_data, big)], measured)
 check("nothing is prepared or copied when the disk check fails", not [argv for argv in ran if "prep" in argv or argv[:1] == ["rsync"]], repr(ran))
 check("prepare containers are named for their recipe and rank", "--name" in prepares[0] and a.prepare_name("paired", 0) in prepares[0] and a.prepare_name("paired", 1) in " ".join(prepares[1]))
-with patch.object(a.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as local, patch.object(a, "pair_ssh") as remote, patch.object(a, "known_models", return_value=[]):
+with patch.object(a.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as local, patch.object(a, "pair_ssh") as remote, patch.object(a, "known_models", return_value=[]), \
+     patch.object(a, "peer_data_dir", return_value=peer_data):
   a.pair_remove({"recipe_id": "paired", "pair": {"peer": "10.99.1.2", "host": "spark2", "home": "/home/bob", "image_id": "c" * 64}})
 check("remove stops a prepare a cancelled setup left running, here and on the peer",
       any(call.args[0] == ["podman", "rm", "-f", a.prepare_name("paired", 0)] for call in local.call_args_list) and a.prepare_name("paired", 1) in remote.call_args.args[1])
