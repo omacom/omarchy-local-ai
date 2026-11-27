@@ -4945,8 +4945,11 @@ LISTING_TIMEOUT = 4
 HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 DNS_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 SSH_TARGET_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,252}$")
-# A key a paired host hands over, by SSH or typed for a gateway.
+# The key an Omarchy machine hands over by SSH, as it generates them.
 REMOTE_KEY_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
+# A gateway issues its own: any bearer token (RFC 6750's b64token, so a JWT
+# too), which can't break the header it's sent in or the file it's kept in.
+GATEWAY_KEY_RE = re.compile(r"[A-Za-z0-9._~+/-]{16,4096}=*")
 REMOTE_UNITS = ("installing", "active", "activating", "inactive", "failed", "deactivating", "removing")
 OPERATOR_HINT = "Let this user change Tailscale Serve: sudo tailscale set --operator=$USER"
 
@@ -5861,8 +5864,8 @@ def pair_gateway(url, rid=None):
       key = sys.stdin.readline().strip()
   except EOFError:
     key = ""
-  if not REMOTE_KEY_RE.fullmatch(key):
-    raise LocalError("Not a key: 16 to 128 letters, digits, - or _")
+  if not GATEWAY_KEY_RE.fullmatch(key):
+    raise LocalError("Not a key: 16 to 4096 letters, digits or -._~+/, no spaces")
   state, listing, error = fetch_listing(dns, key)
   if state != "online":
     if error in ("HTTP 401", "HTTP 403"):

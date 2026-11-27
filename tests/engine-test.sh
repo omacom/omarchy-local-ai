@@ -1512,9 +1512,15 @@ check("a gateway refused over an SSH pairing's name leaves its key", a._read(a.r
 with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing"):
   a.cmd_forget(["ssh-paired"])
 fetch = MagicMock(side_effect=gateway_fetch)
-for name, key in (("a key that isn't one", "short"), ("a key with a space inside", "k" * 20 + " " + "k" * 20), ("no key at all", None)):
+for name, key in (("a key that isn't one", "short"), ("a key with a space inside", "k" * 20 + " " + "k" * 20), ("a key with a control character", "k" * 20 + "\x1b" + "k" * 20),
+                  ("a key too long for a header", "k" * 4097), ("no key at all", None)):
   raises(f"{name} is refused before the gateway is asked", lambda: pair_gateway(["https://models.example.com"], key=key, fetch=fetch), "Not a key")
 check("nothing reaches the gateway before the key is one", not fetch.called)
+jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvbWFyY2h5In0.c2lnbmF0dXJlK2J5dGVzL2hlcmU="
+fetched, _ = pair_gateway(["https://models.example.com"], key=jwt, fetch=lambda dns, key=None: ("online", clean, "") if key == jwt else ("unreachable", None, "HTTP 401"))
+check("a gateway's key may be any bearer token, a JWT with dots, + and / and = included", a._read(a.remote_key_path("models")) == jwt and fetched.call_args_list[0].args == ("models.example.com", jwt))
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing"):
+  a.cmd_forget(["models"])
 raises("a key the gateway refuses is said so, with what to do", lambda: pair_gateway(["https://models.example.com"], key="w" * 32), "models refused the key\nAsk for another key")
 raises("a key the gateway forbids is said so too", lambda: pair_gateway(["https://models.example.com"], fetch=lambda dns, key=None: ("unreachable", None, "HTTP 403")), "models refused the key")
 raises("a gateway that's down is said so", lambda: pair_gateway(["https://models.example.com"], fetch=lambda dns, key=None: ("unreachable", None, "Connection refused")), "Can't reach models: Connection refused")
