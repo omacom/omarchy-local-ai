@@ -11,6 +11,7 @@ export XDG_CONFIG_HOME="$HOME/.config"
 python3 -I <<'PY'
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -21,7 +22,7 @@ import sys
 import tempfile
 import tomllib
 from types import SimpleNamespace
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 sys.path.insert(0, os.environ["ENGINE_ROOT"])
 import agent_local as a
@@ -1356,19 +1357,19 @@ previous = {"hosts": {
   "gone/old-model": {"id": "gone/old-model", "host": "gone", "recipe": "old-model", "unit": "active"},
 }}
 now = 2_000_000
-with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   net = a.survey_network(previous, now=now)
 check("the survey lists a sharing peer's models by host/recipe", net["models"]["box/big-model"]["endpoint"] == "https://box.tail.ts.net/local-ai/big-model/v1" and net["models"]["box/big-model"]["offline"] == "")
 check("a model its host has stopped is left off the list", "box/odd-state" not in net["models"])
 check("the survey skips this machine, phones and peers sharing nothing", set(net["hosts"]) == {"box", "away", "flaky"})
 check("sharing needs HTTPS certificates on the tailnet", net["can_share"] is False)
-with patch.object(a, "tailscale_status", return_value={**ts_status, "CertDomains": ["me.tail.ts.net"]}), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value={**ts_status, "CertDomains": ["me.tail.ts.net"]}), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   check("a tailnet with MagicDNS and HTTPS can share", a.survey_network(previous, now=now)["can_share"] is True)
 check("a host that went offline keeps its models, marked offline", net["models"]["away/small-model"]["offline"] == "offline" and net["models"]["away/small-model"]["unit"] == "inactive" and net["hosts"]["away"]["state"] == "offline")
 check("an online host that stopped answering is marked unreachable", net["models"]["flaky/mid-model"]["offline"] == "unreachable" and net["hosts"]["flaky"]["error"] == "HTTP 502")
 check("offline hosts keep their last-seen time", net["hosts"]["away"]["last_seen_ms"] == 1_000_000 and net["hosts"]["box"]["last_seen_ms"] == now)
 check("an unpaired host unseen for a week is dropped", "gone/old-model" not in net["models"])
-with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   later = a.survey_network(net, now=now + a.FORGET_UNPAIRED_MS)
 check("an unpaired offline host is forgotten after a week", "away/small-model" not in later["models"] and "box/big-model" in later["models"])
 
@@ -1376,7 +1377,7 @@ check("an unpaired offline host is forgotten after a week", "away/small-model" n
 a.ensure_dir(a.remotes_dir(), 0o700)
 a.write_atomic(a.remote_key_path("away"), "k" * 32, mode=0o600)
 a.write_atomic(os.path.join(a.remotes_dir(), "away.json"), json.dumps({"host": "away", "dns": "away.tail.ts.net", "ssh": "away"}))
-with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   later = a.survey_network(net, now=now + 10 * a.FORGET_UNPAIRED_MS)
 check("a paired offline host keeps its models however long it's away", later["models"]["away/small-model"]["paired"] and later["models"]["away/small-model"]["offline"] == "offline")
 with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing") as fetch:
@@ -1386,7 +1387,7 @@ with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fe
   blind = a.survey_network(previous, now=now)
 check("without tailscaled, an unpaired host seen this week stays, offline", blind["models"].get("flaky/mid-model", {}).get("offline") == "offline" and "gone/old-model" not in blind["models"], repr(sorted(blind["models"])))
 a.write_atomic(a.network_path(), json.dumps(later))
-with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   a.cmd_forget(["away"])
 forgotten = a.load_network()
 check("forgetting a host drops its key and its models at once", not os.path.exists(a.remote_key_path("away")) and "away/small-model" not in forgotten["models"] and "box/big-model" in forgotten["models"])
@@ -1396,7 +1397,7 @@ def pair_away(**record):
   a.write_atomic(a.remote_key_path("away"), "k" * 32, mode=0o600)
   a.write_atomic(os.path.join(a.remotes_dir(), "away.json"), json.dumps({"host": "away", "dns": "away.tail.ts.net", "ssh": "away", **record}))
 def away_paired():
-  with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+  with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
     return {mid: m["paired"] for mid, m in a.survey_network(later, now=now)["models"].items() if m["host"] == "away"}
 pair_away()
 check("a host paired whole connects every model it shares", away_paired() == {"away/small-model": True})
@@ -1404,13 +1405,13 @@ pair_away(models=["other-model"])
 check("a host paired for one model leaves its others unpaired", away_paired() == {"away/small-model": False})
 raises("a model that isn't connected can't be used", lambda: a.resolve_remote("away/small-model"), "isn't paired")
 a.write_atomic(a.network_path(), json.dumps(later))
-with patch.object(a.subprocess, "run", side_effect=AssertionError("no SSH")), patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a.subprocess, "run", side_effect=AssertionError("no SSH")), patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   a.cmd_pair(["away.tail.ts.net", "small-model"])
 check("pairing another model of a paired host needs no SSH", a.load_remotes()["away"]["models"] == ["other-model", "small-model"] and away_paired() == {"away/small-model": True})
-with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   a.cmd_forget(["away/small-model"])
 check("disconnecting a model keeps the host's others and its key", a.load_remotes()["away"]["models"] == ["other-model"] and os.path.exists(a.remote_key_path("away")) and a.load_network()["models"]["away/small-model"]["paired"] is False)
-with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   a.cmd_forget(["away/small-model"])
 check("disconnecting a model that isn't connected leaves the host paired", a.load_remotes()["away"]["models"] == ["other-model"])
 # A host paired whole: disconnecting one model needs no list of the others,
@@ -1423,18 +1424,18 @@ whole = a.load_remotes()["away"]
 check("disconnecting a model of a host paired whole keeps the key and every other model, even with no survey",
       os.path.exists(a.remote_key_path("away")) and not a.connected(whole, "small-model") and a.connected(whole, "new-model"))
 a.write_atomic(a.network_path(), json.dumps(later))
-with patch.object(a.subprocess, "run", side_effect=AssertionError("no SSH")), patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a.subprocess, "run", side_effect=AssertionError("no SSH")), patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   a.cmd_pair(["away", "small-model"])
 check("pairing it again reconnects it", a.connected(a.load_remotes()["away"], "small-model"))
 pair_away(models=["small-model"])
-with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   a.cmd_forget(["away/small-model"])
 check("disconnecting the only model of a one-at-a-time pairing unpairs the host", "away" not in a.load_remotes() and not os.path.exists(a.remote_key_path("away")))
 
 # The same host reached by another SSH name keeps what it connects.
 pair_away(models=["other-model"])
 export = json.dumps({"host": "away", "dns": "away.tail.ts.net", "key": "n" * 32})
-with patch.object(a.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, export + "\n", "")), patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns: answers[dns]):
+with patch.object(a.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, export + "\n", "")), patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=lambda dns, key=None: answers[dns]):
   a.cmd_pair(["alice@away", "small-model"])
 again = a.load_remotes()["away"]
 check("pairing a host again under another name adds to its models", again["models"] == ["other-model", "small-model"] and again["ssh"] == "alice@away")
@@ -1455,6 +1456,120 @@ a.write_atomic(os.path.join(a.remotes_dir(), "away.json"), json.dumps({"host": "
 raises("a network model is named host/recipe", lambda: a.split_remote_id("box/../x"), "host/recipe")
 raises("an SSH target can't smuggle options", lambda: a.ssh_command({"ssh": "-oProxyCommand=x", "dns": ""}, "share", "--export"), "Not an SSH target")
 check("remote commands run the engine by its own command, quoted", a.ssh_command({"ssh": "box", "dns": "box.tail.ts.net"}, "share", "--export")[-2:] == ["box", "omarchy-local-ai share --export"])
+
+# A key goes to the address it's asked for and never on to wherever a
+# redirect points: a real server on loopback says which paths saw it.
+import http.server
+import threading
+seen_auth = {}
+class Redirecting(http.server.BaseHTTPRequestHandler):
+  def log_message(self, *args): pass
+  def do_GET(self):
+    seen_auth[self.path] = self.headers.get("Authorization")
+    if self.path == "/a":
+      self.send_response(302)
+      self.send_header("Location", "/b")
+      self.send_header("Content-Length", "0")
+      self.end_headers()
+    else:
+      self.send_response(200)
+      self.send_header("Content-Length", "2")
+      self.end_headers()
+      self.wfile.write(b"{}")
+server = http.server.HTTPServer(("127.0.0.1", 0), Redirecting)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+a.http_status(f"http://127.0.0.1:{server.server_port}/a", key="g" * 32)
+server.shutdown()
+check("a key is sent to the address asked and never on to a redirect", seen_auth == {"/a": "Bearer " + "g" * 32, "/b": None}, repr(seen_auth))
+
+# A gateway: a server that isn't an Omarchy machine but serves the listing and
+# the models at its own https address, behind keys it issues. Pairing asks for
+# the key on standard input (a terminal hides it), checks it against the
+# listing and needs no SSH.
+gateway_key = "g" * 32
+def gateway_fetch(dns, key=None):
+  if dns != "models.example.com":
+    return answers.get(dns, ("unreachable", None, "no such host"))
+  return ("online", clean, "") if key == gateway_key else ("unreachable", None, "HTTP 401" if key else "HTTP 404")
+def pair_gateway(argv, key=gateway_key, status=ts_status, fetch=gateway_fetch, tty=False):
+  stdin = io.StringIO(key + "\n" if key is not None else "")
+  stdin.isatty = lambda: tty
+  with patch.object(a.sys, "stdin", stdin), patch.object(a.subprocess, "run", side_effect=AssertionError("no SSH")), \
+       patch("getpass.getpass", return_value=key) as asked, \
+       patch.object(a, "tailscale_status", return_value=status), patch.object(a, "fetch_listing", side_effect=fetch) as fetched:
+    a.cmd_pair(argv)
+  return fetched, asked
+for name, url in (("a path", "https://models.example.com/v1"), ("a port", "https://models.example.com:8443"), ("a bad port", "https://models.example.com:xyz"),
+                  ("a user", "https://me@models.example.com"), ("a password", "https://:pw@models.example.com"), ("an address", "https://192.168.1.10"),
+                  ("no domain", "https://models"), ("a query", "https://models.example.com/?x=1")):
+  raises(f"a gateway is paired by its name alone, not {name}", lambda: pair_gateway([url]), "its name alone")
+raises("a gateway can't take a tailnet machine's name", lambda: pair_gateway(["https://box.example.com"]), "already a machine's name")
+raises("a gateway can't take this machine's name", lambda: pair_gateway(["https://me.example.com"]), "already a machine's name")
+a.write_atomic(a.remote_key_path("ssh-paired"), "s" * 32, mode=0o600)
+a.write_atomic(os.path.join(a.remotes_dir(), "ssh-paired.json"), json.dumps({"host": "ssh-paired", "dns": "ssh-paired.tail.ts.net", "ssh": "ssh-paired"}))
+raises("a gateway can't take an SSH pairing's name, even without tailscaled", lambda: pair_gateway(["https://ssh-paired.example.com"], status=None), "already a machine's name")
+check("a gateway refused over an SSH pairing's name leaves its key", a._read(a.remote_key_path("ssh-paired")) == "s" * 32)
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing"):
+  a.cmd_forget(["ssh-paired"])
+fetch = MagicMock(side_effect=gateway_fetch)
+for name, key in (("a key that isn't one", "short"), ("a key with a space inside", "k" * 20 + " " + "k" * 20), ("no key at all", None)):
+  raises(f"{name} is refused before the gateway is asked", lambda: pair_gateway(["https://models.example.com"], key=key, fetch=fetch), "Not a key")
+check("nothing reaches the gateway before the key is one", not fetch.called)
+raises("a key the gateway refuses is said so, with what to do", lambda: pair_gateway(["https://models.example.com"], key="w" * 32), "models refused the key\nAsk for another key")
+raises("a key the gateway forbids is said so too", lambda: pair_gateway(["https://models.example.com"], fetch=lambda dns, key=None: ("unreachable", None, "HTTP 403")), "models refused the key")
+raises("a gateway that's down is said so", lambda: pair_gateway(["https://models.example.com"], fetch=lambda dns, key=None: ("unreachable", None, "Connection refused")), "Can't reach models: Connection refused")
+check("a refused key leaves nothing stored", "models" not in a.load_remotes() and not os.path.exists(a.remote_key_path("models")))
+fetched, asked = pair_gateway(["https://models.example.com"], tty=True)
+gateway = a.load_remotes()["models"]
+check("on a terminal the key is asked for without echo", asked.call_args.args == ("Key for models.example.com: ",))
+check("pairing a gateway stores its address and key, marked a gateway, without SSH",
+      gateway["dns"] == "models.example.com" and gateway["gateway"] is True and "ssh" not in gateway and a.connected(gateway, "big-model")
+      and a._read(a.remote_key_path("models")) == gateway_key and oct(os.stat(a.remote_key_path("models")).st_mode & 0o777) == "0o600")
+check("pairing a gateway checks the key against its listing", fetched.call_args_list[0].args == ("models.example.com", gateway_key))
+check("a gateway's key never lands in network.json", gateway_key not in open(a.network_path()).read())
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing", side_effect=gateway_fetch) as fetch:
+  offline = a.survey_network({"hosts": {}, "models": {}}, now=now)
+check("a gateway is asked at its address with its key, even without tailscaled, and an SSH-paired host isn't",
+      [call.args for call in fetch.call_args_list] == [("models.example.com", gateway_key)]
+      and offline["models"]["models/big-model"]["paired"] and offline["models"]["models/big-model"]["endpoint"] == "https://models.example.com/local-ai/big-model/v1"
+      and offline["hosts"]["models"]["state"] == "online", repr(fetch.call_args_list))
+with patch.object(a, "tailscale_status", return_value=ts_status), patch.object(a, "fetch_listing", side_effect=gateway_fetch) as fetch:
+  a.survey_network({"hosts": {}, "models": {}}, now=now)
+check("an Omarchy machine's listing is asked for without a key", all(call.args[1] is None for call in fetch.call_args_list if call.args[0] != "models.example.com"), repr(fetch.call_args_list))
+for name, reply in (("refusing connections", (0, b"<urlopen error [Errno 111] Connection refused>")), ("answering 404", (404, b""))):
+  with patch.object(a, "http_status", return_value=reply):
+    state, _, _ = a.fetch_listing("models.example.com", gateway_key)
+    plain, _, _ = a.fetch_listing("box.tail.ts.net")
+  check(f"a gateway {name} is down, not sharing nothing, unlike a tailnet machine", state == "unreachable" and plain == "not_sharing")
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing", return_value=("unreachable", None, "Connection refused")):
+  down = a.survey_network(offline, now=now + 1)
+check("a gateway that's down keeps its models' lines, marked unreachable", down["models"]["models/big-model"]["offline"] == "unreachable" and down["hosts"]["models"]["state"] == "unreachable")
+with patch.object(a, "fetch_listing", side_effect=gateway_fetch):
+  path, provider, model = a.pi_overlay("models/big-model")
+  check("a gateway's model launches against its own endpoint and key file", provider == "omarchy-local-models"
+        and "https://models.example.com/local-ai/big-model/v1" in open(path).read() and a.remote_key_path("models") in open(path).read() and gateway_key not in open(path).read())
+raises("another gateway can't take a paired gateway's name", lambda: pair_gateway(["https://models.other.org"], key="h" * 32), "already the name of the gateway at models.example.com\nForget it first")
+check("a gateway refused over another's name leaves its key and address", a._read(a.remote_key_path("models")) == gateway_key and a.load_remotes()["models"]["dns"] == "models.example.com")
+a.write_atomic(a.network_path(), json.dumps({"hosts": {}, "models": {"models/big-model": {**offline["models"]["models/big-model"], "dns": "models.old.org", "endpoint": "https://models.old.org/local-ai/big-model/v1"}}}))
+check("a line seen at another address than the pairing's never gets its key", not [t for t in a.remote_targets() if t["provider"] == "omarchy-local-models"])
+export = json.dumps({"host": "models", "dns": "models.tail.ts.net", "key": "n" * 32})
+with patch.object(a.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, export + "\n", "")), patch.object(a, "tailscale_status", return_value=ts_status):
+  raises("an SSH pairing can't take a gateway's name", lambda: a.cmd_pair(["alice@elsewhere"]), "already a gateway's name")
+check("an SSH pairing refused over a gateway's name leaves its key", a._read(a.remote_key_path("models")) == gateway_key)
+export = json.dumps({"host": "newline", "dns": "newline.tail.ts.net", "key": "n" * 32 + "\n"})
+with patch.object(a.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, export + "\n", "")), patch.object(a, "tailscale_status", return_value=ts_status):
+  raises("a key sent over SSH with a line break is no key", lambda: a.cmd_pair(["newline"]), "invalid host name or key")
+raises("pairing a gateway again by its name asks for its key again, not SSH", lambda: pair_gateway(["models"], key="r" * 32), "models refused the key")
+check("a new key the gateway refuses leaves the one it had", a._read(a.remote_key_path("models")) == gateway_key)
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing"):
+  a.cmd_forget(["models"])
+check("forgetting a gateway drops its key", "models" not in a.load_remotes() and not os.path.exists(a.remote_key_path("models")))
+pair_gateway(["https://models.example.com", "big-model"])
+check("a gateway can be paired for one model", a.load_remotes()["models"]["models"] == ["big-model"])
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing", side_effect=gateway_fetch):
+  a.cmd_forget(["models/big-model"])
+check("disconnecting a gateway's only model unpairs it and drops its lines, which SSH couldn't pair again",
+      "models" not in a.load_remotes() and "models" not in a.load_network()["hosts"] and not any(m["host"] == "models" for m in a.load_network()["models"].values()))
 
 # A paired, running remote model becomes an overlay with its own provider.
 a.write_atomic(a.remote_key_path("box"), "b" * 32, mode=0o600)

@@ -2365,11 +2365,12 @@ HTTP_MAX_BYTES = 1 << 20
 
 
 def http_status(url, key=None, timeout=10):
-  headers = {"User-Agent": "omarchy-agent-local"}
+  request = urllib.request.Request(url, headers={"User-Agent": "omarchy-agent-local"})
   if key:
-    headers["Authorization"] = f"Bearer {key}"
+    # Never sent on to wherever a redirect points.
+    request.add_unredirected_header("Authorization", f"Bearer {key}")
   try:
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
       return response.status, response.read(HTTP_MAX_BYTES)
   except urllib.error.HTTPError as error:
     return error.code, b""
@@ -4944,6 +4945,8 @@ LISTING_TIMEOUT = 4
 HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 DNS_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 SSH_TARGET_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,252}$")
+# A key a paired host hands over, by SSH or typed for a gateway.
+REMOTE_KEY_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
 REMOTE_UNITS = ("installing", "active", "activating", "inactive", "failed", "deactivating", "removing")
 OPERATOR_HINT = "Let this user change Tailscale Serve: sudo tailscale set --operator=$USER"
 
@@ -5574,22 +5577,33 @@ def clean_listing(listing, dns):
   return {"ram_total_gib": _number(listing.get("ram_total_gib")), "models": models}
 
 
-def fetch_listing(dns):
+def fetch_listing(dns, key=None):
   """(state, listing, error): online with its models, not_sharing, or unreachable.
   A peer's answer is untrusted: whatever it makes fetching, parsing or cleaning raise (a
   malformed response, nesting deep enough to recurse out) leaves that one peer
-  unreachable, never the whole survey."""
+  unreachable, never the whole survey. A gateway's listing is asked for with
+  its key (listing_key): it lists what that key may use."""
   try:
-    status, body = http_status(f"https://{dns}{LISTING_ROUTE}", timeout=LISTING_TIMEOUT)
+    status, body = http_status(f"https://{dns}{LISTING_ROUTE}", key=key, timeout=LISTING_TIMEOUT)
     # Tailscale stops listening on 443 once a host's last serve route goes, so
-    # an online host refusing the connection simply shares nothing.
-    if status == 404 or (status == 0 and b"Connection refused" in body):
+    # an online host refusing the connection simply shares nothing. A gateway
+    # (asked with its key) serves its listing on its own: refusing it is it
+    # being down, which keeps its models' lines.
+    if not key and (status == 404 or (status == 0 and b"Connection refused" in body)):
       return "not_sharing", None, ""
     if status != 200:
       return "unreachable", None, f"HTTP {status}" if status else body.decode(errors="replace")[:200]
     return "online", clean_listing(json.loads(body), dns), ""
   except Exception as error:
     return "unreachable", None, str(error)[:200]
+
+
+def listing_key(remote):
+  """The key a paired host's listing is asked for with: a gateway's own, and
+  none for an Omarchy machine, whose listing is the same for every peer."""
+  if not (remote or {}).get("gateway"):
+    return None
+  return _read(remote_key_path(remote["host"])) or None
 
 
 def remote_record(host, dns, model, paired, ram_total_gib, last_seen_ms):
@@ -5622,13 +5636,18 @@ def survey_network(previous, now=None):
     if dns and dns != me and node.get("OS") == "linux":
       peers[dns.split(".")[0]] = (dns, node.get("Online") is True)
   for host, remote in remotes.items():
-    peers.setdefault(host, (remote["dns"], False))
+    # A gateway is reached at its own address, tailnet or not: only its
+    # answer says whether it's up.
+    if remote.get("gateway"):
+      peers[host] = (remote["dns"], True)
+    else:
+      peers.setdefault(host, (remote["dns"], False))
   for host, before in (previous.get("hosts") or {}).items():
     if isinstance(before, dict) and before.get("dns"):
       peers.setdefault(host, (before["dns"], False))
   online = {host: dns for host, (dns, up) in peers.items() if up}
   with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-    answers = dict(zip(online, pool.map(fetch_listing, online.values())))
+    answers = dict(zip(online, pool.map(lambda host: fetch_listing(online[host], listing_key(remotes.get(host))), online)))
   for host, (dns, up) in sorted(peers.items()):
     paired = host in remotes
     before = previous.get("hosts", {}).get(host) or {}
@@ -5699,7 +5718,7 @@ def resolve_remote(mid, running_only=True):
   remote = load_remotes().get(host)
   if not connected(remote, rid):
     raise LocalError(f"{host}/{rid} isn't paired. Run: omarchy models pair {host} {rid}")
-  state, listing, error = fetch_listing(remote["dns"])
+  state, listing, error = fetch_listing(remote["dns"], listing_key(remote))
   if state != "online":
     raise LocalError(f"{host} doesn't share models right now" if state == "not_sharing" else f"{host} isn't reachable{': ' + error if error else ''}")
   for model in listing["models"]:
@@ -5733,15 +5752,17 @@ def ssh_command(remote, *argv, interactive=False):
 
 
 def cmd_pair(argv):
-  parser = argparse.ArgumentParser(prog="omarchy models pair", description="Use the models another machine on your tailnet shares")
-  parser.add_argument("host", help="its tailnet name, or an SSH host that reaches it")
+  parser = argparse.ArgumentParser(prog="omarchy models pair", description="Use the models another machine on your tailnet shares, or a gateway serves")
+  parser.add_argument("host", help="its tailnet name, an SSH host that reaches it, or https:// and a gateway's name")
   parser.add_argument("recipe", nargs="?", help="connect just this model; without one, every model it shares")
   args = parser.parse_args(argv)
   target = args.host
-  if not SSH_TARGET_RE.match(target):
-    raise LocalError("Not a host name")
   if args.recipe is not None and not ID_RE.match(args.recipe):
     raise LocalError("Not a recipe name")
+  if target.startswith("https://"):
+    return pair_gateway(target, args.recipe)
+  if not SSH_TARGET_RE.match(target):
+    raise LocalError("Not a host name")
   # A host already paired has given its key: connecting another of its models
   # needs no SSH.
   if args.recipe:
@@ -5754,6 +5775,11 @@ def cmd_pair(argv):
       write_network()
       say(f"Paired with {remote['host']}/{args.recipe}")
       return 0
+  # A gateway paired again, by its name, is asked for its key again: there
+  # is no SSH to it.
+  gateway = next((r for r in load_remotes().values() if r.get("gateway") and target in (r["host"], r["dns"])), None)
+  if gateway:
+    return pair_gateway(f"https://{gateway['dns']}")
   say(f"Pairing with {target} over SSH")
   # ssh exits 255 both when nothing answers and when sshd turns down every key
   # offered, so its stderr tells the two apart. On a terminal a key's
@@ -5778,9 +5804,11 @@ def cmd_pair(argv):
     host, dns, key = export["host"], export["dns"], export["key"]
   except (ValueError, KeyError, IndexError, TypeError):
     raise LocalError(f"{name} didn't send its sharing details")
-  if not HOST_RE.match(str(host)) or not DNS_RE.match(str(dns)) or not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", key):
+  if not HOST_RE.match(str(host)) or not DNS_RE.match(str(dns)) or not isinstance(key, str) or not REMOTE_KEY_RE.fullmatch(key):
     raise LocalError(f"{name} sent an invalid host name or key")
   with remotes_lock():
+    if (load_remotes().get(host) or {}).get("gateway"):
+      raise LocalError(f"{host} is already a gateway's name\nForget it first: omarchy models forget {host}")
     write_atomic(remote_key_path(host), key, mode=0o600)
     # The same host reached by another name keeps the models it connects.
     remote = load_remotes().get(host) or {"models": []}
@@ -5800,6 +5828,78 @@ def cmd_pair(argv):
   return 0
 
 
+def pair_gateway(url, rid=None):
+  """Pair with a gateway: a server that isn't an Omarchy machine but serves
+  the listing and an OpenAI-compatible endpoint per model at its own https
+  address, behind keys it issues. Its key is asked for here, never taken on
+  the command line, and checked against its listing before it's stored."""
+  parts = urllib.parse.urlsplit(url)
+  dns = (parts.hostname or "").lower()
+  try:
+    port = parts.port
+  except ValueError:
+    port = True
+  try:
+    ipaddress.ip_address(dns)
+    literal = True
+  except ValueError:
+    literal = False
+  if not DNS_RE.match(dns) or literal or port is not None or "@" in parts.netloc or parts.path not in ("", "/") or parts.query or parts.fragment:
+    raise LocalError("A gateway is paired by its name alone, like https://models.example.com")
+  host = dns.split(".")[0]
+  if not HOST_RE.match(host):
+    raise LocalError("Not a host name")
+  status = tailscale_status() or {}
+  machines = {node_dns(node).split(".")[0] for node in [status.get("Self"), *(status.get("Peer") or {}).values()] if node_dns(node)}
+  check_gateway_name(host, dns, machines)
+  try:
+    if sys.stdin.isatty():
+      import getpass
+      key = getpass.getpass(f"Key for {dns}: ").strip()
+    else:
+      # A script hands the key over on standard input.
+      key = sys.stdin.readline().strip()
+  except EOFError:
+    key = ""
+  if not REMOTE_KEY_RE.fullmatch(key):
+    raise LocalError("Not a key: 16 to 128 letters, digits, - or _")
+  state, listing, error = fetch_listing(dns, key)
+  if state != "online":
+    if error in ("HTTP 401", "HTTP 403"):
+      raise LocalError(f"{host} refused the key\nAsk for another key from whoever runs {dns}")
+    raise LocalError(f"Can't reach {host}{': ' + error if error else ''}")
+  with remotes_lock():
+    # Checked again under the lock: another pairing may have taken the name.
+    check_gateway_name(host, dns, machines)
+    remote = load_remotes().get(host) or {"models": []}
+    write_atomic(remote_key_path(host), key, mode=0o600)
+    remote.update(host=host, dns=dns, gateway=True, paired_ms=int(time.time() * 1000))
+    if rid:
+      set_connected(remote, rid, True)
+    else:
+      remote.pop("models", None)
+      remote.pop("disconnected", None)
+    save_remote(remote)
+  network = write_network()
+  shared = [m for m in network["models"].values() if m["host"] == host and m["paired"]]
+  if shared:
+    say(f"Paired with {host}: " + ", ".join(m["recipe"] + ("" if m["offline"] else f" ({m['unit']})") for m in shared))
+  else:
+    say(f"Paired with {host}. It offers no running models to this key")
+  return 0
+
+
+def check_gateway_name(host, dns, machines):
+  """A gateway goes by its name's first label, which mustn't be a tailnet
+  machine's, an SSH pairing's or another gateway's: their models and keys
+  would be mixed up."""
+  existing = load_remotes().get(host)
+  if host in machines or (existing and not existing.get("gateway")):
+    raise LocalError(f"{host} is already a machine's name on your tailnet")
+  if existing and existing["dns"] != dns:
+    raise LocalError(f"{host} is already the name of the gateway at {existing['dns']}\nForget it first: omarchy models forget {host}")
+
+
 def cmd_forget(argv):
   parser = argparse.ArgumentParser(prog="omarchy models forget", description="Unpair a host, or disconnect one of its models with host/recipe")
   parser.add_argument("host", help="host, or host/recipe for just that model")
@@ -5812,12 +5912,16 @@ def cmd_forget(argv):
       if not connected(remote, rid):
         say(f"{host}/{rid} isn't paired")
         return 0
-      # The last model disconnected unpairs the host, dropping its key.
+      # The last model disconnected unpairs the host, dropping its key. A
+      # gateway's lines go with it: it can't be paired again over SSH, which
+      # an unpaired line would offer.
+      gone = None
       if set_connected(remote, rid, False):
         save_remote(remote)
       else:
         unpair(host)
-    write_network()
+        gone = host if remote.get("gateway") else None
+    write_network(forget=gone)
     say(f"Disconnected {host}/{rid}")
     return 0
   if not HOST_RE.match(host):
@@ -5840,7 +5944,7 @@ def cmd_network(argv):
   if args.json:
     print(json.dumps(network, indent=2))
     return 0
-  if not network["tailnet"]:
+  if not network["tailnet"] and not network["models"]:
     say("This machine isn't on a tailnet. Run: tailscale up")
     return 0
   if not network["models"]:
@@ -5953,8 +6057,10 @@ def remote_targets():
   targets = []
   for model in load_network()["models"].values():
     try:
-      # An image model is for Fantasi, not an agent.
-      if model.get("paired") and model["host"] in remotes and model.get("kind", "text") == "text":
+      # An image model is for Fantasi, not an agent. A line seen at another
+      # address than the host's pairing has now is stale: its key is for the
+      # pairing's address alone.
+      if model.get("paired") and model["host"] in remotes and model.get("dns") == remotes[model["host"]]["dns"] and model.get("kind", "text") == "text":
         targets.append(remote_target(model))
     except (KeyError, TypeError, AttributeError):
       pass
@@ -6166,7 +6272,7 @@ SUMMARIES = {
   "remove": "Remove a model's weights, manifests and unused image",
   "share": "Share a model with the other machines on your tailnet, or stop with --off",
   "network": "List the models shared on your tailnet, including hosts that are offline",
-  "pair": "Pair with a machine over SSH to use the models it shares",
+  "pair": "Pair with a machine over SSH, or a gateway by its https name, to use the models it shares",
   "forget": "Unpair a machine and drop its models",
   "logs": "Show a model's logs, and its other half's on a paired Spark",
   "link": "Show the Spark cabled to this one; 'link setup <peer>' prepares both",
