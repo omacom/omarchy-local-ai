@@ -108,6 +108,9 @@ BEST_FIELDS = {"text": "recipes", "image": "images", "video": "videos", "music":
 # acestep.cpp's / sa3-server's list of the models it found.
 APIS = ("openai", "sdcpp", "acestep", "sa3")
 GFX_FAMILIES = {"gfx1151": "amd-strix-halo", "gfx1150": "amd-strix-point"}
+# Unified AMD iGPUs below this Compute Unit count (e.g. 2-CU Radeon 610M / gfx1036) are
+# display-only GPUs that time out under compute workloads and are excluded like Intel's i915.
+MIN_AMD_UNIFIED_CU = 8
 # Intel integrated graphics on the xe kernel driver (Lunar Lake and newer) is a GPU here. Those
 # named by PCI device id keep that name; any other is intel-xe-<device id>.
 INTEL_FAMILIES = {"0xb080": "intel-arc-b390"}
@@ -294,6 +297,12 @@ def amd_gpus(kfd_root="/sys/class/kfd/kfd/topology/nodes", drm_root="/sys/class/
     device = os.path.join(drm_root, render, "device")
     vram = int(_read(os.path.join(device, "mem_info_vram_total"), "0") or 0)
     gtt = int(_read(os.path.join(device, "mem_info_gtt_total"), "0") or 0)
+    unified = vram < 4 * 2**30
+    simd_count = int(props.get("simd_count", "0") or 0)
+    simd_per_cu = int(props.get("simd_per_cu", "0") or 0)
+    cus = simd_count // simd_per_cu if simd_count and simd_per_cu else 0
+    if unified and 0 < cus < MIN_AMD_UNIFIED_CU:
+      continue
     gfx = gfx_name(version)
     gpus.append({
       "vendor": "amd",
@@ -302,7 +311,7 @@ def amd_gpus(kfd_root="/sys/class/kfd/kfd/topology/nodes", drm_root="/sys/class/
       "render_node": f"/dev/dri/{render}",
       "vram_gib": round(gib(vram), 2),
       "gtt_gib": round(gib(gtt), 2),
-      "unified": vram < 4 * 2**30,
+      "unified": unified,
       "memory_gib": round(gib(vram + gtt), 2),
       "sysfs": device,
     })
@@ -436,6 +445,13 @@ def machine_profile():
   return profile
 
 
+def gpu_rank(gpu):
+  """Ordering key for GPU selection: pairs outrank single nodes, discrete GPUs outrank
+  integrated ones (whose GTT share of system RAM can exceed a card's VRAM), and larger
+  memory wins ties."""
+  return (gpu.get("nodes", 1), 0 if gpu.get("unified") else 1, gpu["memory_gib"])
+
+
 def choose_gpu(profile, family=None):
   if family == "cpu":
     return cpu_device(profile)
@@ -444,22 +460,21 @@ def choose_gpu(profile, family=None):
     matches = [gpu for gpu in gpus if gpu["family"] == family]
     if not matches:
       raise LocalError(f"No {family} GPU on this machine (found: {', '.join(g['family'] for g in gpus) or 'none'})")
-    return max(matches, key=lambda gpu: gpu["memory_gib"])
+    return max(matches, key=gpu_rank)
   if not gpus:
     raise LocalError("No supported GPU found on this machine")
-  # A pair outranks its own single node, whose memory per node it shares.
-  rank = lambda gpu: (gpu.get("nodes", 1), gpu["memory_gib"])
-  best = max(gpus, key=rank)
-  rivals = {gpu["family"] for gpu in gpus if rank(gpu) == rank(best)}
+  best = max(gpus, key=gpu_rank)
+  rivals = {gpu["family"] for gpu in gpus if gpu_rank(gpu) == gpu_rank(best)}
   if len(rivals) > 1:
     raise LocalError(f"Several GPU families tie for the most memory ({', '.join(sorted(rivals))}); choose one with --gpu")
   return best
 
 
-def recipe_gpu(profile, recipe, family=None, runtime=None):
+def recipe_gpu(profile, recipe, family=None, runtime=None, ctx=None):
   """The GPU a recipe runs on here: the one named, else the best of this machine's GPUs its
-  runtime runs on (a pair machine still runs single-node recipes on its own GPU, and a CPU
-  runtime runs on CPU even without a supported GPU)."""
+  runtime runs on that fits a variant (a pair machine still runs single-node recipes on its own
+  GPU, a CPU runtime runs on CPU even without a supported GPU, and when none fits it falls back
+  to the highest-ranked matching GPU so the caller reports that shortfall)."""
   if family:
     return choose_gpu(profile, family)
   if runtime is not None:
@@ -472,7 +487,17 @@ def recipe_gpu(profile, recipe, family=None, runtime=None):
     if not matches and "cpu" in measured:
       return cpu_device(profile)
   if matches:
-    return max(matches, key=lambda gpu: (gpu.get("nodes", 1), gpu["memory_gib"]))
+    if recipe.get("variant"):
+      fitting = []
+      for gpu in matches:
+        try:
+          if pick_variant(recipe, profile, gpu, ctx)[0] is not None:
+            fitting.append(gpu)
+        except LocalError:
+          pass
+      if fitting:
+        return max(fitting, key=gpu_rank)
+    return max(matches, key=gpu_rank)
   return choose_gpu(profile)
 
 
@@ -1270,11 +1295,11 @@ def match_class(best, profile, gpu, field="recipes"):
 
 def resolve_best(catalog, profile, gpu=None, ctx=None, field="recipes"):
   """The first fitting recipe of the class of `gpu`, or, with none named, of this machine's
-  GPUs from the strongest down: a pair's class first, then its own node's. `field` is the class's
-  list to choose from: its text recipes, or another kind's list (BEST_FIELDS)."""
+  GPUs from the strongest down: a pair's class first, then discrete GPUs, then integrated ones.
+  `field` is the class's list to choose from: its text recipes, or another kind's list (BEST_FIELDS)."""
   if gpu is not None:
     return _resolve_class(catalog, profile, gpu, ctx, field)
-  gpus = sorted(profile["gpus"], key=lambda g: (g.get("nodes", 1), g["memory_gib"]), reverse=True)
+  gpus = sorted(profile["gpus"], key=gpu_rank, reverse=True)
   if not gpus:
     raise LocalError("No supported GPU found on this machine")
   failures = []
@@ -1309,7 +1334,7 @@ def _resolve_class(catalog, profile, gpu, ctx=None, field="recipes"):
       # A requested context this recipe has no variant for passes to the next recommendation.
       variant, reason = None, str(error)
     if variant:
-      return rid, variant, skipped
+      return rid, variant, skipped, gpu
     skipped.append((rid, reason))
   details = "; ".join(f"{rid}: {reason}" for rid, reason in skipped)
   raise LocalError(f"No recommended recipe fits this machine: {details}")
@@ -3633,15 +3658,15 @@ def cmd_use(argv):
   if args.kind is not None and args.target != "best":
     raise LocalError(f"A kind goes with best: omarchy models use best {args.kind}")
   if args.target == "best":
-    rid, variant, skipped = resolve_best(catalog, profile, gpu, args.ctx if args.kind == "text" else None, field=BEST_FIELDS[args.kind])
-    gpu = recipe_gpu(profile, catalog.recipes[rid], args.gpu, catalog.runtimes.get(catalog.recipes[rid].get("runtime")))
+    best_ctx = args.ctx if args.kind == "text" else None
+    rid, variant, skipped, gpu = resolve_best(catalog, profile, gpu, best_ctx, field=BEST_FIELDS[args.kind])
     for skipped_id, reason in skipped:
       say(f"Skipping {skipped_id}: {reason}")
     say(f"Best {args.kind} model for this machine ({gpu['family']}, {profile['ram_class']} GB): {rid}")
   else:
     rid = args.target
     recipe = _lookup_recipe(catalog, rid)
-    gpu = recipe_gpu(profile, recipe, args.gpu, catalog.runtimes.get(recipe.get("runtime")))
+    gpu = recipe_gpu(profile, recipe, args.gpu, catalog.runtimes.get(recipe.get("runtime")), args.ctx)
     variant, reason = compatibility(catalog, rid, profile, gpu, args.ctx)
     if variant is None:
       raise LocalError(f"{rid} can't run on this machine: {reason}")
@@ -3848,7 +3873,11 @@ def cmd_list(argv):
   if args.json:
     print(json.dumps(rows, indent=2))
     return 0
-  gpu = profile["gpus"][0]["family"] if profile["gpus"] else "no GPU"
+  try:
+    primary = choose_gpu(profile)
+  except LocalError:
+    primary = profile["gpus"][0] if profile["gpus"] else None
+  gpu = primary["family"] if primary else "no GPU"
   paired = f" · linked to {profile['pair']['host']}" if profile.get("pair") else ""
   say(f"This machine: {gpu}, {profile['ram_class']} GB, {profile['platform']}{paired}")
   for row in rows:

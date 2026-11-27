@@ -205,6 +205,49 @@ check("integrated graphics on xe with no name of its own is named by its device 
 (drm / "devices" / "0000:00:02.0" / "driver").unlink()
 (drm / "devices" / "0000:00:02.0" / "driver").symlink_to(drm / "drivers" / "i915")
 check("integrated graphics on the older i915 driver is no GPU", a.intel_gpus(64, str(drm)) == [])
+
+# Weak display-only AMD iGPUs (< 8 CUs, e.g. Radeon 610M / gfx1036) are excluded, while
+# compute-capable APUs and discrete AMD cards remain.
+kfd = Path(os.environ["HOME"]) / "amd-kfd"
+amd_drm = Path(os.environ["HOME"]) / "amd-drm"
+for idx, (ver, minor, simd, per_cu, vram_gb, gtt_gb) in enumerate((
+    (100306, 128, 4, 2, 0.5, 22.63),    # Radeon 610M (2 CUs, unified) -> excluded
+    (110003, 129, 24, 2, 0.5, 22.63),   # Radeon 780M (12 CUs, unified) -> kept
+    (110501, 130, 80, 2, 0.5, 60.0),    # Strix Halo (40 CUs, unified) -> kept
+    (110000, 131, 4, 2, 24.0, 32.0),    # Discrete AMD card (VRAM >= 4 GiB) -> kept
+)):
+  node = kfd / str(idx + 1)
+  node.mkdir(parents=True)
+  (node / "properties").write_text(f"gfx_target_version {ver}\ndrm_render_minor {minor}\nsimd_count {simd}\nsimd_per_cu {per_cu}\n")
+  dev = amd_drm / f"renderD{minor}" / "device"
+  dev.mkdir(parents=True)
+  (dev / "mem_info_vram_total").write_text(f"{int(vram_gb * 2**30)}\n")
+  (dev / "mem_info_gtt_total").write_text(f"{int(gtt_gb * 2**30)}\n")
+found_amd = a.amd_gpus(str(kfd), str(amd_drm))
+check("display-only AMD iGPUs (< 8 CUs) are excluded while APUs and discrete cards stay",
+      [g["family"] for g in found_amd] == ["amd-gfx1103", "amd-strix-halo", "amd-gfx1100"], str([g["family"] for g in found_amd]))
+
+igpu_big_gtt = {"vendor": "amd", "family": "amd-gfx1103", "render_node": "/dev/dri/renderD128", "unified": True, "memory_gib": 54.4}
+dgpu_card = {"vendor": "amd", "family": "amd-gfx1100", "render_node": "/dev/dri/renderD129", "unified": False, "memory_gib": 24.0}
+dual_amd = {"platform": "x86", "ram_gib": 64, "ram_class": 64, "gpus": [igpu_big_gtt, dgpu_card]}
+check("a discrete GPU outranks an integrated GPU even when GTT exceeds VRAM",
+      a.choose_gpu(dual_amd) == dgpu_card)
+small_img = {"kind": "image", "variant": [{"peak_ram_gib": 11, "peak_gpu_gib": 11}]}
+big_vid = {"kind": "video", "variant": [{"peak_ram_gib": 38, "peak_gpu_gib": 38}]}
+amd_rt = {"gpus": ["amd"]}
+check("recipe_gpu prefers a discrete GPU when it fits, and falls back to a larger fitting integrated GPU",
+      a.recipe_gpu(dual_amd, small_img, runtime=amd_rt) == dgpu_card
+      and a.recipe_gpu(dual_amd, big_vid, runtime=amd_rt) == igpu_big_gtt)
+dual_cat = SimpleNamespace(
+  recipes={"big-vid": dict(big_vid, runtime="amd-rt", hardware=[{"gpu": "amd-gfx1103", "ram_class": 64, "measured": "m.toml"}])},
+  runtimes={"amd-rt": amd_rt},
+  best={"class": [{"gpu": "amd-gfx1103", "ram_class": 64, "recipes": ["big-vid"], "videos": ["big-vid"]}]},
+)
+check("resolve_best preserves the fitting GPU it selected",
+      a.resolve_best(dual_cat, dual_amd, field="videos")[3] == igpu_big_gtt)
+pair_gpu = {"vendor": "nvidia", "family": "nvidia-gb10-pair", "nodes": 2, "unified": True, "memory_gib": 120}
+check("a paired unified GPU still outranks a single discrete GPU",
+      a.choose_gpu({"platform": "aarch64-gb10", "ram_gib": 120, "ram_class": 128, "gpus": [dgpu_card, pair_gpu]}) == pair_gpu)
 check("a runtime runs on the vendors and classes it lists, and no other",
       a.runtime_supports(dict(runtime, gpus=["intel"]), lunar[0]) and a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), arc[0])
       and not a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), lunar[0]) and not a.runtime_supports(dict(runtime, gpus=["amd"]), arc[0]))
