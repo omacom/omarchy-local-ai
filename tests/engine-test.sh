@@ -287,16 +287,17 @@ check("device_lines binds the selected discrete NVIDIA card by UUID and keeps al
 
 # Discrete vram_class matching, measurement lookup and validation.
 vram_entry = {"gpu": "nvidia-rtx4090", "vram_class": 24, "recipes": ["dgpu-model"]}
-vram_recipe = dict(recipe, runtime="cuda", hardware=[{"gpu": "nvidia-rtx4090", "vram_class": 24, "measured": "gb10.toml"}])
-check("vram_class matches a discrete GPU regardless of host ram_class",
+vram_recipe = dict(recipe, runtime="cuda", hardware=[{"gpu": "nvidia-rtx4090", "measured": "gb10.toml"}])
+check("vram_class matches a discrete GPU regardless of host ram_class, inheriting smaller classes only",
       a.match_class({"class": [vram_entry]}, {"ram_class": 64, "platform": "x86"}, nv_cards[1]) == vram_entry
-      and a.match_class({"class": [dict(vram_entry, vram_class=16)]}, {"ram_class": 64, "platform": "x86"}, nv_cards[1]) is None)
-check("load_measurement resolves vram_class entries for discrete GPUs",
+      and a.match_class({"class": [dict(vram_entry, vram_class=16)]}, {"ram_class": 64, "platform": "x86"}, nv_cards[1]) == dict(vram_entry, vram_class=16)
+      and a.match_class({"class": [dict(vram_entry, vram_class=32)]}, {"ram_class": 64, "platform": "x86"}, nv_cards[1]) is None)
+check("load_measurement resolves per-chip entries for discrete GPUs",
       a.load_measurement(SimpleNamespace(root=str(shared)), vram_recipe, {"ram_class": 64, "platform": "x86"}, nv_cards[1]).get("long", {}).get("decode_tok_s") == 60.0)
-check("hardware and best entries require exactly one of ram_class or vram_class",
+check("best entries require exactly one of ram_class or vram_class, and hardware rejects vram_class",
       not a.validate_best({"class": [vram_entry]}, {"dgpu-model": vram_recipe})
       and any("ram_class" in e and "vram_class" in e for e in a.validate_best({"class": [dict(vram_entry, ram_class=64)]}, {"dgpu-model": vram_recipe}))
-      and any("ram_class" in e and "vram_class" in e for e in a.validate_recipe("m", dict(vram_recipe, hardware=[{"gpu": "nvidia-rtx4090", "ram_class": 64, "vram_class": 24, "measured": "gb10.toml"}]), {"cuda": dict(runtime, gpus=["nvidia"], run={"devices": ["cdi-nvidia"]})})))
+      and any("vram_class" in e for e in a.validate_recipe("m", dict(vram_recipe, hardware=[{"gpu": "nvidia-rtx4090", "vram_class": 24, "measured": "gb10.toml"}]), {"cuda": dict(runtime, gpus=["nvidia"], run={"devices": ["cdi-nvidia"]})})))
 check("a runtime runs on the vendors and classes it lists, and no other",
       a.runtime_supports(dict(runtime, gpus=["intel"]), lunar[0]) and a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), arc[0])
       and not a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), lunar[0]) and not a.runtime_supports(dict(runtime, gpus=["amd"]), arc[0]))
