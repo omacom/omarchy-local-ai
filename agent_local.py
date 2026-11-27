@@ -4950,6 +4950,9 @@ REMOTE_KEY_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
 # A gateway issues its own: any bearer token (RFC 6750's b64token, so a JWT
 # too), which can't break the header it's sent in or the file it's kept in.
 GATEWAY_KEY_RE = re.compile(r"[A-Za-z0-9._~+/-]{16,4096}=*")
+# What agents are given for a gateway that needs no key: OpenAI clients
+# want one, and a server that checks none ignores it.
+KEYLESS = "none"
 REMOTE_UNITS = ("installing", "active", "activating", "inactive", "failed", "deactivating", "removing")
 OPERATOR_HINT = "Let this user change Tailscale Serve: sudo tailscale set --operator=$USER"
 
@@ -5604,7 +5607,7 @@ def fetch_listing(dns, key=None):
 def listing_key(remote):
   """The key a paired host's listing is asked for with: a gateway's own, and
   none for an Omarchy machine, whose listing is the same for every peer."""
-  if not (remote or {}).get("gateway"):
+  if not (remote or {}).get("gateway") or remote.get("keyless"):
     return None
   return _read(remote_key_path(remote["host"])) or None
 
@@ -5834,8 +5837,9 @@ def cmd_pair(argv):
 def pair_gateway(url, rid=None):
   """Pair with a gateway: a server that isn't an Omarchy machine but serves
   the listing and an OpenAI-compatible endpoint per model at its own https
-  address, behind keys it issues. Its key is asked for here, never taken on
-  the command line, and checked against its listing before it's stored."""
+  address, behind keys it issues or none. Its key is asked for here, never
+  taken on the command line, and checked against its listing before it's
+  stored; no key pairs a gateway that needs none."""
   parts = urllib.parse.urlsplit(url)
   dns = (parts.hostname or "").lower()
   try:
@@ -5858,16 +5862,18 @@ def pair_gateway(url, rid=None):
   try:
     if sys.stdin.isatty():
       import getpass
-      key = getpass.getpass(f"Key for {dns}: ").strip()
+      key = getpass.getpass(f"Key for {dns} (Enter if it needs none): ").strip()
     else:
-      # A script hands the key over on standard input.
+      # A script hands the key over on standard input, or an empty line.
       key = sys.stdin.readline().strip()
   except EOFError:
     key = ""
-  if not GATEWAY_KEY_RE.fullmatch(key):
+  if key and not GATEWAY_KEY_RE.fullmatch(key):
     raise LocalError("Not a key: 16 to 4096 letters, digits or -._~+/, no spaces")
-  state, listing, error = fetch_listing(dns, key)
+  state, listing, error = fetch_listing(dns, key or None)
   if state != "online":
+    if error in ("HTTP 401", "HTTP 403") and not key:
+      raise LocalError(f"{host} needs a key\nAsk for one from whoever runs {dns}, then: omarchy models pair {host}")
     if error in ("HTTP 401", "HTTP 403"):
       raise LocalError(f"{host} refused the key\nAsk for another key from whoever runs {dns}")
     raise LocalError(f"Can't reach {host}{': ' + error if error else ''}")
@@ -5875,8 +5881,12 @@ def pair_gateway(url, rid=None):
     # Checked again under the lock: another pairing may have taken the name.
     check_gateway_name(host, dns, machines)
     remote = load_remotes().get(host) or {"models": []}
-    write_atomic(remote_key_path(host), key, mode=0o600)
+    write_atomic(remote_key_path(host), key or KEYLESS, mode=0o600)
     remote.update(host=host, dns=dns, gateway=True, paired_ms=int(time.time() * 1000))
+    if key:
+      remote.pop("keyless", None)
+    else:
+      remote["keyless"] = True
     if rid:
       set_connected(remote, rid, True)
     else:

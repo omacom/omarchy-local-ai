@@ -1490,7 +1490,7 @@ gateway_key = "g" * 32
 def gateway_fetch(dns, key=None):
   if dns != "models.example.com":
     return answers.get(dns, ("unreachable", None, "no such host"))
-  return ("online", clean, "") if key == gateway_key else ("unreachable", None, "HTTP 401" if key else "HTTP 404")
+  return ("online", clean, "") if key == gateway_key else ("unreachable", None, "HTTP 401")
 def pair_gateway(argv, key=gateway_key, status=ts_status, fetch=gateway_fetch, tty=False):
   stdin = io.StringIO(key + "\n" if key is not None else "")
   stdin.isatty = lambda: tty
@@ -1513,12 +1513,28 @@ with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fe
   a.cmd_forget(["ssh-paired"])
 fetch = MagicMock(side_effect=gateway_fetch)
 for name, key in (("a key that isn't one", "short"), ("a key with a space inside", "k" * 20 + " " + "k" * 20), ("a key with a control character", "k" * 20 + "\x1b" + "k" * 20),
-                  ("a key too long for a header", "k" * 4097), ("no key at all", None)):
+                  ("a key too long for a header", "k" * 4097)):
   raises(f"{name} is refused before the gateway is asked", lambda: pair_gateway(["https://models.example.com"], key=key, fetch=fetch), "Not a key")
 check("nothing reaches the gateway before the key is one", not fetch.called)
 jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvbWFyY2h5In0.c2lnbmF0dXJlK2J5dGVzL2hlcmU="
 fetched, _ = pair_gateway(["https://models.example.com"], key=jwt, fetch=lambda dns, key=None: ("online", clean, "") if key == jwt else ("unreachable", None, "HTTP 401"))
 check("a gateway's key may be any bearer token, a JWT with dots, + and / and = included", a._read(a.remote_key_path("models")) == jwt and fetched.call_args_list[0].args == ("models.example.com", jwt))
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing"):
+  a.cmd_forget(["models"])
+# A gateway that checks no key pairs without one: its listing is asked for
+# without a key, and agents get a placeholder, as OpenAI clients want one.
+open_fetch = lambda dns, key=None: ("online", clean, "") if key is None else ("unreachable", None, "unexpected key")
+raises("a gateway that needs a key says so when none is given", lambda: pair_gateway(["https://models.example.com"], key=""), "models needs a key\nAsk for one")
+for name, key in (("Enter", ""), ("no line at all", None)):
+  fetched, _ = pair_gateway(["https://models.example.com"], key=key, fetch=open_fetch, tty=key is not None)
+  keyless = a.load_remotes()["models"]
+  check(f"a gateway that needs no key pairs with {name}", keyless["keyless"] is True and a._read(a.remote_key_path("models")) == a.KEYLESS
+        and fetched.call_args_list[0].args == ("models.example.com", None))
+with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing", side_effect=open_fetch) as fetch:
+  a.survey_network({"hosts": {}, "models": {}}, now=now)
+check("a keyless gateway's listing is asked for without a key", [call.args for call in fetch.call_args_list] == [("models.example.com", None)])
+pair_gateway(["https://models.example.com"])
+check("pairing it again with a key makes it keyed", "keyless" not in a.load_remotes()["models"] and a._read(a.remote_key_path("models")) == gateway_key)
 with patch.object(a, "tailscale_status", return_value=None), patch.object(a, "fetch_listing"):
   a.cmd_forget(["models"])
 raises("a key the gateway refuses is said so, with what to do", lambda: pair_gateway(["https://models.example.com"], key="w" * 32), "models refused the key\nAsk for another key")
@@ -1527,7 +1543,7 @@ raises("a gateway that's down is said so", lambda: pair_gateway(["https://models
 check("a refused key leaves nothing stored", "models" not in a.load_remotes() and not os.path.exists(a.remote_key_path("models")))
 fetched, asked = pair_gateway(["https://models.example.com"], tty=True)
 gateway = a.load_remotes()["models"]
-check("on a terminal the key is asked for without echo", asked.call_args.args == ("Key for models.example.com: ",))
+check("on a terminal the key is asked for without echo", asked.call_args.args == ("Key for models.example.com (Enter if it needs none): ",))
 check("pairing a gateway stores its address and key, marked a gateway, without SSH",
       gateway["dns"] == "models.example.com" and gateway["gateway"] is True and "ssh" not in gateway and a.connected(gateway, "big-model")
       and a._read(a.remote_key_path("models")) == gateway_key and oct(os.stat(a.remote_key_path("models")).st_mode & 0o777) == "0o600")
