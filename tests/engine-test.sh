@@ -205,6 +205,22 @@ check("integrated graphics on xe with no name of its own is named by its device 
 (drm / "devices" / "0000:00:02.0" / "driver").unlink()
 (drm / "devices" / "0000:00:02.0" / "driver").symlink_to(drm / "drivers" / "i915")
 check("integrated graphics on the older i915 driver is no GPU", a.intel_gpus(64, str(drm)) == [])
+apple = drm / "apple"
+(drm / "drivers" / "apple").mkdir(parents=True, exist_ok=True)
+(drm / "renderD130" / "device").mkdir(parents=True)
+(drm / "renderD130" / "device" / "driver").symlink_to(drm / "drivers" / "apple")
+compat = drm / "compatible"
+compat.write_bytes(b"apple,j415s\0apple,t6001\0apple,arm-platform\0")
+gpus = a.apple_gpus(64, str(drm), str(drm))
+check("the Apple Silicon GPU on Linux is one unified GPU named by its chip",
+      len(gpus) == 1 and gpus[0]["vendor"] == "apple" and gpus[0]["family"] == "apple-m1-max"
+      and gpus[0]["unified"] and gpus[0]["memory_gib"] == 64 and gpus[0]["render_node"] == "/dev/dri/renderD130")
+check("a machine whose device tree names no Apple chip has no Apple GPU",
+      a.apple_gpus(64, str(drm), str(drm / "no-such")) == [])
+compat.write_bytes(b"apple,j415s\0apple,arm-platform\0")
+check("a non-Apple machine (x86, no chip id in the tree) has no Apple GPU",
+      a.apple_gpus(64, str(drm), str(drm)) == [])
+check("a runtime runs on the apple vendor", a.runtime_supports(dict(runtime, gpus=["apple"]), gpus[0]) if gpus else True)
 check("a runtime runs on the vendors and classes it lists, and no other",
       a.runtime_supports(dict(runtime, gpus=["intel"]), lunar[0]) and a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), arc[0])
       and not a.runtime_supports(dict(runtime, gpus=["intel-arc-b390"]), lunar[0]) and not a.runtime_supports(dict(runtime, gpus=["amd"]), arc[0]))

@@ -1,0 +1,25 @@
+# omarchy-mlx (our MLX fork + patched mlx-lm) serving Qwen-family 4-bit models on
+# the Apple Silicon GPU through Mesa's Vulkan driver, built by Omacom from
+# images/omarchy-mlx. Runs on Apple Silicon Linux (the Asahi driver's render
+# node); macOS hosts have no GPU in the Podman VM.
+# The key comes from MLX_API_KEY and covers every route but /health, which says
+# only whether the model has loaded. --alias serves the recipe id at /v1/models.
+image = "ghcr.io/joshuaswarren/omarchy-local-ai/omarchy-mlx@sha256:PILOT-DIGEST"
+tier = "first-party"
+port = 8080
+command = ["mlx_lm.server", "--host", "0.0.0.0", "--port", "8080"]
+health = { probe = ["curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8080/health"] }
+run = { devices = ["render"], group_add = "keep-groups", tmpfs = "/tmp" }
+gpus = ["apple"]
+reserved = ["--host", "--port", "--api-key", "--alias", "--model", "--adapter-path", "--chat-template", "--log-level", "MLX_API_KEY"]
+
+[inputs]
+model = { arg = "--model" }
+alias = { arg = "--alias" }
+key = { env = "MLX_API_KEY" }
+temperature = { arg = "--temp" }
+top_p = { arg = "--top-p" }
+top_k = { arg = "--top-k" }
+# ctx: mlx_lm sizes context from the model config, not a flag. If the contract
+# needs an explicit ctx input, map it to MLX_OMARCHY_CTX and honor it in the
+# server patch.

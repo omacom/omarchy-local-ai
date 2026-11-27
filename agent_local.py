@@ -112,7 +112,16 @@ GFX_FAMILIES = {"gfx1151": "amd-strix-halo", "gfx1150": "amd-strix-point"}
 # named by PCI device id keep that name; any other is intel-xe-<device id>.
 INTEL_FAMILIES = {"0xb080": "intel-arc-b390"}
 # What a runtime's `gpus` may name besides a GPU class: every GPU of a vendor.
-VENDORS = ("amd", "intel", "nvidia")
+VENDORS = ("amd", "intel", "nvidia", "apple")
+# Apple Silicon on Linux (the Asahi driver): the GPU is the SoC's integrated one, a render node
+# whose driver is `apple` with unified memory. The family names the SoC's chip, from the device
+# tree's compatible strings (apple,t6001 and friends).
+APPLE_CHIPS = {
+  "t6000": "apple-m1", "t6001": "apple-m1-max", "t6002": "apple-m1-ultra",
+  "t6020": "apple-m2-pro", "t6021": "apple-m2", "t6022": "apple-m2-ultra",
+  "t6030": "apple-m3-pro", "t6031": "apple-m3-max", "t6034": "apple-m3-max",
+  "t8122": "apple-m3", "t8132": "apple-m3",
+}
 # Mesa lets its Intel driver address three quarters of RAM, and the kernel's ttm.pages_limit
 # (half of RAM unless raised) caps what the driver may map of it.
 INTEL_MEMORY_SHARE = 0.75
@@ -341,6 +350,52 @@ def intel_gpus(ram_gib, drm_root="/sys/class/drm"):
   return gpus
 
 
+def apple_chip(compat_root="/proc/device-tree"):
+  """The Apple SoC's chip id (t6001 and friends) from the device tree's compatible strings,
+  or "" on any other machine."""
+  try:
+    data = open(os.path.join(compat_root, "compatible"), "rb").read()
+  except OSError:
+    return ""
+  for token in data.split(b"\0"):
+    m = re.fullmatch(rb"apple,(t[68]\d{3})", token)
+    if m:
+      return m.group(1).decode()
+  return ""
+
+
+def apple_gpus(ram_gib, drm_root="/sys/class/drm", compat_root="/proc/device-tree"):
+  """The Apple Silicon GPU on Linux (the Asahi driver): one render node, unified memory,
+  Vulkan through Mesa. Machines running macOS have no such node - and their Podman VM has
+  no GPU either - so this only ever fires on Apple Silicon Linux."""
+  chip = apple_chip(compat_root)
+  if not chip:
+    return []
+  gpus = []
+  try:
+    renders = sorted(name for name in os.listdir(drm_root) if name.startswith("renderD"))
+  except OSError:
+    return gpus
+  for render in renders:
+    device = os.path.join(drm_root, render, "device")
+    driver = os.path.basename(os.path.realpath(os.path.join(device, "driver"))) if os.path.isdir(os.path.join(device, "driver")) else ""
+    if driver != "apple":
+      continue
+    gpus.append({
+      "vendor": "apple",
+      "family": APPLE_CHIPS.get(chip, f"apple-{chip}"),
+      "chip": chip,
+      "render_node": f"/dev/dri/{render}",
+      "vram_gib": 0,
+      "gtt_gib": 0,
+      "unified": True,
+      "memory_gib": round(ram_gib, 2),
+      "sysfs": "",
+    })
+    break
+  return gpus
+
+
 def gpu_memory_ceiling_gib(gpu, ram_gib):
   """The most memory this GPU can be given to address: a unified AMD GPU's cap can rise to all of
   RAM but the desktop's reserve, an Intel one's to the three quarters Mesa lets it address (xe sizes
@@ -424,6 +479,7 @@ def machine_profile():
   for gpu in intel_gpus(ram):
     gpu["max_memory_gib"] = gpu_memory_ceiling_gib(gpu, ram)
     gpus.append(gpu)
+  gpus.extend(apple_gpus(ram))
   if platform in NVIDIA_UNIFIED_FAMILIES:
     gpus.append({"vendor": "nvidia", "family": NVIDIA_UNIFIED_FAMILIES[platform], "render_node": "", "vram_gib": 0, "gtt_gib": 0, "unified": True, "memory_gib": round(ram, 2), "sysfs": ""})
   profile = {"platform": platform, "ram_gib": round(ram, 2), "ram_class": ram_class(ram), "gpus": gpus}

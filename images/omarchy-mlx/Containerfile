@@ -1,0 +1,29 @@
+# omarchy-mlx's mlx_lm.server with the alias and key patch, Vulkan through Mesa's
+# Honeykrisp Apple-GPU driver, for omarchy-local-ai. Built on aarch64 from the
+# pinned mlx-lm commit (94cdcae, the oMLX line) with the omarchy-mlx 0.32 series
+# and the alias-key patch applied. Pilot image for the Apple Silicon runtime:
+# the Honeykrisp ICD and driver are mounted from the host at run time (the real
+# image ships the omarchy-mlx-vulkan package).
+
+FROM docker.io/library/archlinux@sha256:fcee73ea1b96e236248f53a213f71276cc9072d9025b58bce9915e32f19963ae
+
+RUN pacman --disable-sandbox -Syu --noconfirm --needed python python-pip meson curl patch git base-devel \
+ && pacman --disable-sandbox -Scc --noconfirm
+
+# mlx core (pip wheel carries the compiled backend) and the pinned mlx-lm.
+RUN pip install --break-system-packages --no-cache-dir \
+      "mlx @ https://github.com/ml-explore/mlx/archive/refs/tags/v0.32.3.tar.gz" \
+ && pip install --break-system-packages --no-cache-dir \
+      "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@94cdcae13b266c337bcaca09b97b9c5a9c0e2cde"
+
+# The omarchy-mlx series plus the alias-key patch. The series file lives beside
+# this Containerfile in the omarchy-mlx checkout; copy it in at build time.
+COPY mlx-lm-0.32-series.tgz /tmp/series.tgz
+COPY mlx-lm-server-alias-key.patch /tmp/
+RUN mkdir -p /tmp/series \
+ && tar -xzf /tmp/series.tgz -C /tmp/series \
+ && cd /usr/lib/python3.*/site-packages \
+ && for p in $(grep -oE 'mlx-lm-[a-z0-9-]+\.patch' /tmp/series/list.txt); do \
+      patch --forward --fuzz=0 < "/tmp/series/patches/mlx-lm-0.32/\$p" || [ $? -eq 1 ]; done \
+ && patch --forward --fuzz=0 < /tmp/mlx-lm-server-alias-key.patch \
+ && python -c "import ast; ast.parse(open('mlx_lm/server.py').read())"
