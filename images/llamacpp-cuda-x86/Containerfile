@@ -1,0 +1,61 @@
+# llama.cpp's llama-server, built with CUDA for x86_64 discrete NVIDIA GPUs
+# (Ampere, Ada Lovelace, Blackwell), as runtimes/llamacpp-cuda-x86.toml runs it.
+# Built from ggml-org/llama.cpp at the same pinned commit as images/llamacpp,
+# with no patches. The driver's libcuda arrives through CDI; the image carries
+# only the CUDA runtime libraries the CUDA backend links, which NVIDIA's CUDA
+# EULA lists as redistributable (Attachment A). CPU backends for every x86-64
+# instruction set are built too, so a model's experts can run from system RAM.
+
+# CUDA 13.4.3, the toolkit matching the 615 driver's CUDA 13.4, on Ubuntu 24.04.
+ARG BUILD_BASE=docker.io/nvidia/cuda@sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9
+ARG BASE=docker.io/library/ubuntu@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
+
+FROM ${BUILD_BASE} AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates
+# llama.cpp's build tag for COMMIT, which names the published image (b12521-<n>).
+ARG BUILD=b12521
+ARG COMMIT=6f311d7ad63dce97a3ad1deaafb7cc044bb8c26c
+RUN git clone https://github.com/ggml-org/llama.cpp /src \
+ && git -C /src checkout --quiet "$COMMIT"
+# Compute capabilities 8.6 (Ampere), 8.9 (Ada Lovelace), 12.0 (Blackwell) and 12.0 PTX for forward compatibility.
+# One CPU backend per instruction set, picked at start, so the image runs on any x86-64.
+ARG CUDA_ARCHITECTURES="86;89;120;120-virtual"
+RUN cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+      -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES" \
+      -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+      -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_OPENSSL=OFF \
+ && cmake --build /build -j"$(nproc)" \
+ && DESTDIR=/out cmake --install /build --strip \
+ && find /out/usr/bin -type f ! -name llama-server ! -name llama-bench ! -name 'libggml-*.so' -delete
+# The CUDA libraries the CUDA backend needs at run time, by what it links, with
+# cuBLASLt, which cuBLAS loads. Their packages' copyright files hold the EULA.
+RUN mkdir -p /cuda /licenses/nvidia \
+ && ldd /out/usr/bin/libggml-cuda.so | awk '/\/usr\/local\/cuda/ { print $3 }' \
+    | while read -r lib; do cp -L "$lib" /cuda/; done \
+ && cp -L /usr/local/cuda/lib64/libcublasLt.so.13 /cuda/ \
+ && for package in cuda-cudart-13-4 libcublas-13-4; do \
+      install -Dm644 "/usr/share/doc/$package/copyright" "/licenses/nvidia/$package"; \
+    done \
+ && ls -la /cuda
+# The licenses of llama.cpp, ggml and the third-party code built in.
+RUN cd /src \
+ && find . -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -print \
+    | while read -r file; do install -Dm644 "$file" "/licenses/${file#./}"; done
+
+FROM ${BASE}
+# OpenMP for ggml's CPU backends; curl for the health probe.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /cuda/ /usr/local/lib/
+COPY --from=build /out/usr/lib/ /usr/local/lib/
+# The backends load from beside the server, in /usr/bin.
+COPY --from=build /out/usr/bin/ /usr/bin/
+RUN ldconfig
+COPY --from=build /licenses /usr/share/licenses/llama.cpp
+LABEL org.opencontainers.image.source="https://github.com/omacom/omarchy-local-ai"
+LABEL org.opencontainers.image.description="llama.cpp's llama-server, built with CUDA for x86_64 discrete NVIDIA GPUs in omarchy-local-ai"
+LABEL org.opencontainers.image.licenses="MIT"
+EXPOSE 8080
+CMD ["llama-server", "--host", "0.0.0.0", "--port", "8080"]
